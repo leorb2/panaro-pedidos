@@ -1,0 +1,41 @@
+# ============================================================
+#  Panaro Car Care — Portal Mayoristas
+#  .htaccess — Seguridad básica
+# ============================================================
+
+# Deshabilitar listado de directorios
+Options -Indexes
+
+# Proteger archivos sensibles
+<FilesMatch "^(config\.php|credenciales\.php|credenciales\.ejemplo\.php|listas_lib\.php|admin_extra\.php|install\.php|\.env|composer\.(json|lock|phar))$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>
+
+# Bloquear acceso directo a uploads de imágenes de productos
+# (las imágenes se sirven a través de PHP cuando el usuario está logueado)
+
+# UTF-8 por defecto
+AddDefaultCharset UTF-8
+
+# Headers de seguridad básicos
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options nosniff
+    Header always set X-Frame-Options SAMEORIGIN
+    Header always set Referrer-Policy no-referrer-when-downgrade
+</IfModule>
+
+# Comprimir respuestas
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/css application/javascript
+</IfModule>
+
+# Cache de assets estáticos
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType image/png  "access plus 7 days"
+    ExpiresByType image/jpeg "access plus 7 days"
+    ExpiresByType image/webp "access plus 7 days"
+    ExpiresByType text/css   "access plus 1 day"
+    ExpiresByType application/javascript "access plus 1 day"
+</IfModule>

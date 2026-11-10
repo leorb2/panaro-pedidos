@@ -1,0 +1,6 @@
+credenciales.php
+vendor/
+cache/*
+!cache/.htaccess
+pdf/
+*.log
