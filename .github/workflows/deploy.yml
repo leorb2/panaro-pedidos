@@ -106,5 +106,13 @@ jobs:
 
       - name: Verificar sitio
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' https://pedidos.panaro.com.ar/index.php)
-          echo "index.php → $code"; [ "$code" = "200" ]
+          U=https://pedidos.panaro.com.ar
+          chk() { c=$(curl -s -o /dev/null -w '%{http_code}' "$U/$1"); echo "$1 → $c (esperado $2)"; [ "$c" = "$2" ] || FALLA=1; }
+          FALLA=0
+          chk index.php 200
+          chk listas.php 302
+          chk exportar_productos.php 302
+          chk assets/fonts/herosc-bold.ttf 200
+          chk credenciales.php 403
+          chk cache/ 403
+          exit $FALLA
