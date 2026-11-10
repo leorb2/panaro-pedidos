@@ -1,0 +1,95 @@
+# Deploy automático a Hostinger (pedidos.panaro.com.ar)
+# - Cada push a main sube los archivos por rsync (no borra nada del servidor).
+# - Ejecutar a mano con "migrar = sí" corre sql/migracion_v5.sql, con backup previo.
+#
+# Secrets del repo: SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY, DEPLOY_PATH
+name: Deploy Hostinger
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['sql/**', '**.md']
+  workflow_dispatch:
+    inputs:
+      migrar:
+        description: 'Correr sql/migracion_v5.sql (hace backup antes)'
+        type: boolean
+        default: false
+
+concurrency: deploy-hostinger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${{ secrets.SSH_PORT }}" "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SSH=ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" >> $GITHUB_ENV
+          echo "DEST=${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}/" >> $GITHUB_ENV
+
+      - name: Credenciales en el servidor
+        # Si todavía no existe credenciales.php, lo arma con los define() del config.php
+        # actual del servidor, ANTES de reemplazarlo. Si no logra sacar las claves, frena.
+        run: |
+          $SSH bash -s <<'REMOTO'
+          set -e
+          cd "${{ secrets.DEPLOY_PATH }}"
+          if [ -f credenciales.php ]; then echo "credenciales.php ya existe"; exit 0; fi
+          [ -f config.php ] || { echo "No hay config.php ni credenciales.php"; exit 1; }
+          cp config.php "config.backup-$(date +%Y%m%d-%H%M%S).php"
+          php -r '
+            $src = file_get_contents("config.php");
+            $out = "<?php\n// Claves del portal (generado en el primer deploy). No se versiona.\n";
+            foreach (["DB_HOST","DB_NAME","DB_USER","DB_PASS","WA_NUMBER","SITE_URL","MAIL_TO","MAIL_FROM","MAIL_NAME","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID"] as $k) {
+              if (preg_match("/define\(\s*[\x27\"]".$k."[\x27\"]\s*,\s*(.+?)\s*\)\s*;/", $src, $m))
+                $out .= "define(\x27$k\x27, $m[1]);\n";
+            }
+            if (!preg_match("/DB_USER\x27, [\x27\"][^\x27\"]+/", $out)) { fwrite(STDERR, "No encontré DB_USER en config.php\n"); exit(1); }
+            file_put_contents("credenciales.php", $out);
+          '
+          chmod 600 credenciales.php
+          echo "credenciales.php creado a partir del config.php actual"
+          REMOTO
+
+      - name: Subir archivos
+        run: |
+          rsync -rlz --chmod=D755,F644 -e "ssh -p ${{ secrets.SSH_PORT }}" \
+            --exclude '.git*' --exclude '.github' --exclude 'sql' --exclude '*.md' \
+            --exclude 'credenciales.php' --exclude 'vendor' --exclude 'pdf' \
+            --exclude 'cache/dompdf' --exclude 'cache/listas' \
+            --exclude 'assets/img/productos' \
+            ./ "$DEST"
+          # Fotos de productos: solo las que faltan (no pisa las que suba el admin)
+          rsync -rlz --ignore-existing --chmod=D755,F644 -e "ssh -p ${{ secrets.SSH_PORT }}" \
+            assets/img/productos/ "${DEST}assets/img/productos/"
+          # Las listas en caché se regeneran con el código nuevo
+          $SSH "rm -rf '${{ secrets.DEPLOY_PATH }}/cache/listas'"
+
+      - name: Migración de base (solo a mano)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.migrar }}
+        run: |
+          rsync -z -e "ssh -p ${{ secrets.SSH_PORT }}" sql/migracion_v5.sql "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:migracion_v5.sql"
+          $SSH bash -s <<'REMOTO'
+          set -e
+          cd "${{ secrets.DEPLOY_PATH }}"
+          eval "$(php -r 'include "credenciales.php"; foreach (["DB_HOST","DB_NAME","DB_USER","DB_PASS"] as $k) echo $k,"=",escapeshellarg(constant($k)),"\n";')"
+          export MYSQL_PWD="$DB_PASS"
+          mkdir -p ~/backups
+          F=~/backups/pedidos-$(date +%Y%m%d-%H%M%S).sql.gz
+          mysqldump -h "$DB_HOST" -u "$DB_USER" --single-transaction "$DB_NAME" | gzip > "$F"
+          echo "Backup: $F ($(du -h "$F" | cut -f1))"
+          mysql -h "$DB_HOST" -u "$DB_USER" --default-character-set=utf8mb4 "$DB_NAME" < ~/migracion_v5.sql
+          rm -f ~/migracion_v5.sql
+          echo "Migración aplicada"
+          REMOTO
+
+      - name: Verificar sitio
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://pedidos.panaro.com.ar/index.php)
+          echo "index.php → $code"; [ "$code" = "200" ]
