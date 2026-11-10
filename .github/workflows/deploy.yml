@@ -2,7 +2,7 @@
 # - Cada push a main sube los archivos por rsync (no borra nada del servidor).
 # - Ejecutar a mano con "migrar = sí" corre sql/migracion_v5.sql, con backup previo.
 #
-# Secrets del repo: SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY (DEPLOY_PATH opcional: si falta, se busca la carpeta del portal)
+# Secret obligatorio: SSH_KEY. Opcional: DEPLOY_PATH (si falta, se busca la carpeta del portal).
 name: Deploy Hostinger
 
 on:
@@ -18,6 +18,11 @@ on:
 
 concurrency: deploy-hostinger
 
+env:
+  SSH_HOST: 45.132.157.212
+  SSH_PORT: '65002'
+  SSH_USER: u459164554
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -26,12 +31,13 @@ jobs:
 
       - name: Preparar SSH
         run: |
+          [ -n "${{ secrets.SSH_KEY }}" ] || { echo "Falta el secret SSH_KEY en Settings → Secrets → Actions"; exit 1; }
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p "${{ secrets.SSH_PORT }}" "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-          echo "SSH=ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" >> $GITHUB_ENV
-          SSH="ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          ssh-keyscan -p "${{ env.SSH_PORT }}" "${{ env.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SSH=ssh -p ${{ env.SSH_PORT }} ${{ env.SSH_USER }}@${{ env.SSH_HOST }}" >> $GITHUB_ENV
+          SSH="ssh -p ${{ env.SSH_PORT }} ${{ env.SSH_USER }}@${{ env.SSH_HOST }}"
           DP="${{ secrets.DEPLOY_PATH }}"
           if [ -z "$DP" ]; then
             # carpeta del portal: la que tiene pedido.php y admin_extra.php
@@ -40,7 +46,7 @@ jobs:
           [ -n "$DP" ] || { echo "No encontré la carpeta del portal en el servidor"; exit 1; }
           echo "Carpeta del portal: $DP"
           echo "DP=$DP" >> $GITHUB_ENV
-          echo "DEST=${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:$DP/" >> $GITHUB_ENV
+          echo "DEST=${{ env.SSH_USER }}@${{ env.SSH_HOST }}:$DP/" >> $GITHUB_ENV
 
       - name: Credenciales en el servidor
         # Si todavía no existe credenciales.php, lo arma con los define() del config.php
@@ -69,7 +75,7 @@ jobs:
       - name: Migración de base (solo a mano)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.migrar }}
         run: |
-          rsync -z -e "ssh -p ${{ secrets.SSH_PORT }}" sql/migracion_v5.sql "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:migracion_v5.sql"
+          rsync -z -e "ssh -p ${{ env.SSH_PORT }}" sql/migracion_v5.sql "${{ env.SSH_USER }}@${{ env.SSH_HOST }}:migracion_v5.sql"
           $SSH bash -s <<'REMOTO'
           set -e
           cd "${{ env.DP }}"
@@ -86,14 +92,14 @@ jobs:
 
       - name: Subir archivos
         run: |
-          rsync -rlz --chmod=D755,F644 -e "ssh -p ${{ secrets.SSH_PORT }}" \
+          rsync -rlz --chmod=D755,F644 -e "ssh -p ${{ env.SSH_PORT }}" \
             --exclude '.git*' --exclude '.github' --exclude 'sql' --exclude '*.md' \
             --exclude 'credenciales.php' --exclude 'vendor' --exclude 'pdf' \
             --exclude 'cache/dompdf' --exclude 'cache/listas' \
             --exclude 'assets/img/productos' \
             ./ "$DEST"
           # Fotos de productos: solo las que faltan (no pisa las que suba el admin)
-          rsync -rlz --ignore-existing --chmod=D755,F644 -e "ssh -p ${{ secrets.SSH_PORT }}" \
+          rsync -rlz --ignore-existing --chmod=D755,F644 -e "ssh -p ${{ env.SSH_PORT }}" \
             assets/img/productos/ "${DEST}assets/img/productos/"
           # Las listas en caché se regeneran con el código nuevo
           $SSH "rm -rf '${{ env.DP }}/cache/listas'"
