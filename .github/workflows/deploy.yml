@@ -2,7 +2,7 @@
 # - Cada push a main sube los archivos por rsync (no borra nada del servidor).
 # - Ejecutar a mano con "migrar = sí" corre sql/migracion_v5.sql, con backup previo.
 #
-# Secrets del repo: SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY, DEPLOY_PATH
+# Secrets del repo: SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY (DEPLOY_PATH opcional: si falta, se busca la carpeta del portal)
 name: Deploy Hostinger
 
 on:
@@ -31,7 +31,16 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p "${{ secrets.SSH_PORT }}" "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
           echo "SSH=ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" >> $GITHUB_ENV
-          echo "DEST=${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}/" >> $GITHUB_ENV
+          SSH="ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          DP="${{ secrets.DEPLOY_PATH }}"
+          if [ -z "$DP" ]; then
+            # carpeta del portal: la que tiene pedido.php y admin_extra.php
+            DP=$($SSH 'for d in ~/domains/*/public_html ~/domains/*/public_html/* ~/public_html ~/public_html/*; do [ -f "$d/pedido.php" ] && [ -f "$d/admin_extra.php" ] && echo "$d"; done' | head -1)
+          fi
+          [ -n "$DP" ] || { echo "No encontré la carpeta del portal en el servidor"; exit 1; }
+          echo "Carpeta del portal: $DP"
+          echo "DP=$DP" >> $GITHUB_ENV
+          echo "DEST=${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:$DP/" >> $GITHUB_ENV
 
       - name: Credenciales en el servidor
         # Si todavía no existe credenciales.php, lo arma con los define() del config.php
@@ -39,7 +48,7 @@ jobs:
         run: |
           $SSH bash -s <<'REMOTO'
           set -e
-          cd "${{ secrets.DEPLOY_PATH }}"
+          cd "${{ env.DP }}"
           if [ -f credenciales.php ]; then echo "credenciales.php ya existe"; exit 0; fi
           [ -f config.php ] || { echo "No hay config.php ni credenciales.php"; exit 1; }
           cp config.php "config.backup-$(date +%Y%m%d-%H%M%S).php"
@@ -57,6 +66,24 @@ jobs:
           echo "credenciales.php creado a partir del config.php actual"
           REMOTO
 
+      - name: Migración de base (solo a mano)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.migrar }}
+        run: |
+          rsync -z -e "ssh -p ${{ secrets.SSH_PORT }}" sql/migracion_v5.sql "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:migracion_v5.sql"
+          $SSH bash -s <<'REMOTO'
+          set -e
+          cd "${{ env.DP }}"
+          eval "$(php -r 'include "credenciales.php"; foreach (["DB_HOST","DB_NAME","DB_USER","DB_PASS"] as $k) echo $k,"=",escapeshellarg(constant($k)),"\n";')"
+          export MYSQL_PWD="$DB_PASS"
+          mkdir -p ~/backups
+          F=~/backups/pedidos-$(date +%Y%m%d-%H%M%S).sql.gz
+          mysqldump -h "$DB_HOST" -u "$DB_USER" --single-transaction "$DB_NAME" | gzip > "$F"
+          echo "Backup: $F ($(du -h "$F" | cut -f1))"
+          mysql -h "$DB_HOST" -u "$DB_USER" --default-character-set=utf8mb4 "$DB_NAME" < ~/migracion_v5.sql
+          rm -f ~/migracion_v5.sql
+          echo "Migración aplicada"
+          REMOTO
+
       - name: Subir archivos
         run: |
           rsync -rlz --chmod=D755,F644 -e "ssh -p ${{ secrets.SSH_PORT }}" \
@@ -69,25 +96,7 @@ jobs:
           rsync -rlz --ignore-existing --chmod=D755,F644 -e "ssh -p ${{ secrets.SSH_PORT }}" \
             assets/img/productos/ "${DEST}assets/img/productos/"
           # Las listas en caché se regeneran con el código nuevo
-          $SSH "rm -rf '${{ secrets.DEPLOY_PATH }}/cache/listas'"
-
-      - name: Migración de base (solo a mano)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.migrar }}
-        run: |
-          rsync -z -e "ssh -p ${{ secrets.SSH_PORT }}" sql/migracion_v5.sql "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:migracion_v5.sql"
-          $SSH bash -s <<'REMOTO'
-          set -e
-          cd "${{ secrets.DEPLOY_PATH }}"
-          eval "$(php -r 'include "credenciales.php"; foreach (["DB_HOST","DB_NAME","DB_USER","DB_PASS"] as $k) echo $k,"=",escapeshellarg(constant($k)),"\n";')"
-          export MYSQL_PWD="$DB_PASS"
-          mkdir -p ~/backups
-          F=~/backups/pedidos-$(date +%Y%m%d-%H%M%S).sql.gz
-          mysqldump -h "$DB_HOST" -u "$DB_USER" --single-transaction "$DB_NAME" | gzip > "$F"
-          echo "Backup: $F ($(du -h "$F" | cut -f1))"
-          mysql -h "$DB_HOST" -u "$DB_USER" --default-character-set=utf8mb4 "$DB_NAME" < ~/migracion_v5.sql
-          rm -f ~/migracion_v5.sql
-          echo "Migración aplicada"
-          REMOTO
+          $SSH "rm -rf '${{ env.DP }}/cache/listas'"
 
       - name: Verificar sitio
         run: |
