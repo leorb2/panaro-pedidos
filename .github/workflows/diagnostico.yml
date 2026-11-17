@@ -73,17 +73,6 @@ jobs:
             if ($f && is_file($f)) { echo "[$f]\n"; echo implode('', array_slice(file($f), -15)); }
           PHP
 
-      - name: Buscar Telegram en el servidor
+      - name: Telegram en config viejo
         run: |
-          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" bash -s <<'SH'
-          cd ~
-          echo "== Archivos que mencionan telegram (sin vendor) =="
-          grep -rIil telegram domains/panaro.com.ar/public_html --include=*.php --exclude-dir=vendor 2>/dev/null | head -20
-          echo "== Líneas con token (enmascarado) =="
-          grep -rIhoE "[0-9]{8,10}:[A-Za-z0-9_-]{30,}" domains/panaro.com.ar/public_html --include=*.php --exclude-dir=vendor 2>/dev/null | sed -E 's/^([0-9]{3})[0-9]*:(.{3}).*/\1…:\2…/' | sort | uniq -c
-          grep -rIl -E "[0-9]{8,10}:[A-Za-z0-9_-]{30,}" domains/panaro.com.ar/public_html --include=*.php --exclude-dir=vendor 2>/dev/null | head
-          echo "== Mail: buzones del dominio / MX =="
-          (command -v dig >/dev/null && dig +short MX panaro.com.ar) || host -t mx panaro.com.ar 2>/dev/null || php -r 'print_r(dns_get_record("panaro.com.ar", DNS_MX));'
-          echo "== Log de correo saliente =="
-          ls -la ~/logs 2>/dev/null | head; tail -n 20 ~/logs/*mail* 2>/dev/null
-          SH
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "cd '$DP' && grep -n -i -B2 -A12 'telegram' config.backup-*.php" | sed -E 's/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<TOKEN>/g; s/(-?[0-9]{3})[0-9]{5,}/\1…<ID>/g'
