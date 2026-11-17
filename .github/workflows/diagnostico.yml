@@ -1,0 +1,74 @@
+# Diagnóstico de avisos (Telegram / mail). Solo se ejecuta a mano.
+# No imprime claves: muestra solo largo y primeros caracteres.
+name: Diagnostico avisos
+
+on:
+  workflow_dispatch:
+    inputs:
+      probar_envio:
+        description: 'Mandar un mensaje y un mail de prueba'
+        type: boolean
+        default: true
+
+env:
+  SSH_HOST: 45.132.157.212
+  SSH_PORT: '65002'
+  SSH_USER: u459164554
+  DP: /home/u459164554/domains/panaro.com.ar/public_html/panaro-pedidos
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Diagnóstico
+        run: |
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "cd '$DP' && PROBAR=${{ inputs.probar_envio && '1' || '0' }} php" <<'PHP'
+          <?php
+          $mask = fn($v) => $v === null ? '(no definida)' : (strlen((string)$v) . ' car., empieza "' . substr((string)$v, 0, 4) . '…"');
+          echo "== Constantes en config.backup (config viejo) ==\n";
+          foreach (glob('config.backup-*.php') as $f) {
+            preg_match_all("/define\(\s*['\"]([A-Z_]+)['\"]/", file_get_contents($f), $m);
+            echo basename($f), ": ", implode(' ', $m[1]), "\n";
+          }
+          echo "\n== Constantes en credenciales.php ==\n";
+          preg_match_all("/define\(\s*['\"]([A-Z_]+)['\"]/", file_get_contents('credenciales.php'), $m);
+          echo implode(' ', $m[1]), "\n";
+
+          $_SERVER['HTTP_HOST'] = 'pedidos.panaro.com.ar';
+          require 'config.php';
+          echo "\n== Valores efectivos (enmascarados) ==\n";
+          foreach (['TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','MAIL_TO','MAIL_FROM','MAIL_NAME','WA_NUMBER'] as $k)
+            echo str_pad($k, 20), defined($k) ? $mask(constant($k)) : '(no definida)', "\n";
+
+          echo "\n== Telegram ==\n";
+          $tok = defined('TELEGRAM_BOT_TOKEN') ? TELEGRAM_BOT_TOKEN : '';
+          echo "allow_url_fopen: ", ini_get('allow_url_fopen') ? 'sí' : 'NO', "\n";
+          $r = @file_get_contents("https://api.telegram.org/bot{$tok}/getMe", false, stream_context_create(['http'=>['timeout'=>8,'ignore_errors'=>true]]));
+          echo "getMe: ", $r === false ? 'sin respuesta (' . (error_get_last()['message'] ?? '') . ')' : preg_replace('/"id":\d+/', '"id":…', $r), "\n";
+          if (getenv('PROBAR') === '1') {
+            $ctx = stream_context_create(['http'=>['method'=>'POST','timeout'=>8,'ignore_errors'=>true,
+              'header'=>"Content-Type: application/x-www-form-urlencoded\r\n",
+              'content'=>http_build_query(['chat_id'=>TELEGRAM_CHAT_ID,'text'=>"🔧 Prueba de avisos del portal (diagnóstico)"])]]);
+            $r = @file_get_contents("https://api.telegram.org/bot{$tok}/sendMessage", false, $ctx);
+            echo "sendMessage: ", $r === false ? 'sin respuesta' : substr(preg_replace('/"id":-?\d+/', '"id":…', $r), 0, 300), "\n";
+
+            echo "\n== Mail ==\n";
+            $h = "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nFrom: " . MAIL_NAME . " <" . MAIL_FROM . ">\r\n";
+            $ok = mail(MAIL_TO, 'Prueba de avisos del portal', "Si te llega este mail, el envío funciona.", $h);
+            echo "mail() devolvió: ", $ok ? 'true' : 'FALSE', " (destino ", $mask(MAIL_TO), ")\n";
+          }
+
+          echo "\n== Últimos pedidos ==\n";
+          foreach (db()->query("SELECT * FROM pedidos ORDER BY id DESC LIMIT 5") as $p)
+            echo "#{$p["id"]} ", $p["created_at"] ?? $p["fecha"] ?? "", " lista {$p["lista_id"]}\n";
+
+          echo "\n== Errores PHP recientes ==\n";
+          foreach (['error_log', '../error_log', ini_get('error_log')] as $f)
+            if ($f && is_file($f)) { echo "[$f]\n"; echo implode('', array_slice(file($f), -15)); }
+          PHP
