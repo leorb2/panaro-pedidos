@@ -55,14 +55,32 @@ jobs:
           $SSH bash -s <<'REMOTO'
           set -e
           cd "${{ env.DP }}"
-          if [ -f credenciales.php ]; then echo "credenciales.php ya existe"; exit 0; fi
+          if [ -f credenciales.php ]; then
+            echo "credenciales.php ya existe"
+            # Completar Telegram si falta (el config viejo lo tenía como const, no define)
+            if ! grep -q TELEGRAM_BOT_TOKEN credenciales.php; then
+              php -r '
+                $add = "";
+                foreach (glob("config.backup-*.php") as $f) {
+                  $src = file_get_contents($f);
+                  foreach (["TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID"] as $k)
+                    if (strpos($add, $k) === false && preg_match("/(?:const\s+".$k."\s*=|define\(\s*[\x27\"]".$k."[\x27\"]\s*,)\s*([\x27\"][^\x27\"]*[\x27\"])/", $src, $m))
+                      $add .= "define(\x27$k\x27, $m[1]);\n";
+                }
+                if ($add) { file_put_contents("credenciales.php", "\n// Telegram (recuperado del config anterior)\n$add", FILE_APPEND); echo "Telegram agregado a credenciales.php\n"; }
+                else echo "No encontré Telegram en los config.backup\n";
+              '
+            fi
+            exit 0
+          fi
           [ -f config.php ] || { echo "No hay config.php ni credenciales.php"; exit 1; }
           cp config.php "config.backup-$(date +%Y%m%d-%H%M%S).php"
           php -r '
             $src = file_get_contents("config.php");
             $out = "<?php\n// Claves del portal (generado en el primer deploy). No se versiona.\n";
             foreach (["DB_HOST","DB_NAME","DB_USER","DB_PASS","WA_NUMBER","SITE_URL","MAIL_TO","MAIL_FROM","MAIL_NAME","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID"] as $k) {
-              if (preg_match("/define\(\s*[\x27\"]".$k."[\x27\"]\s*,\s*(.+?)\s*\)\s*;/", $src, $m))
+              if (preg_match("/define\(\s*[\x27\"]".$k."[\x27\"]\s*,\s*(.+?)\s*\)\s*;/", $src, $m)
+               || preg_match("/const\s+".$k."\s*=\s*(.+?)\s*;/", $src, $m))
                 $out .= "define(\x27$k\x27, $m[1]);\n";
             }
             if (!preg_match("/DB_USER\x27, [\x27\"][^\x27\"]+/", $out)) { fwrite(STDERR, "No encontré DB_USER en config.php\n"); exit(1); }
