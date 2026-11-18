@@ -68,6 +68,10 @@ jobs:
           foreach (db()->query("SELECT * FROM pedidos ORDER BY id DESC LIMIT 5") as $p)
             echo "#{$p["id"]} ", $p["created_at"] ?? $p["fecha"] ?? "", " lista {$p["lista_id"]}\n";
 
+          echo "\n== Límites de subida (CLI) ==\n";
+          foreach (['upload_max_filesize','post_max_size','memory_limit','max_execution_time'] as $k) echo "$k = ", ini_get($k), "\n";
+          foreach (['.user.ini','php.ini','../.user.ini','../php.ini'] as $f) if (is_file($f)) echo "[$f]\n", file_get_contents($f), "\n";
+          echo "php.ini cargado: ", php_ini_loaded_file(), "\n";
           echo "\n== Errores PHP recientes ==\n";
           foreach (['error_log', '../error_log', ini_get('error_log')] as $f)
             if ($f && is_file($f)) { echo "[$f]\n"; echo implode('', array_slice(file($f), -15)); }
