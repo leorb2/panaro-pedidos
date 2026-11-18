@@ -217,6 +217,45 @@ function enviar_telegram(string $mensaje): void {
     @file_get_contents($url, false, $ctx);
 }
 
+// ── Archivos adjuntos de novedades (catálogo, folletos, etc.) ──────────
+const ADJUNTO_MAX_MB   = 25;
+const ADJUNTO_EXT      = ['pdf','xlsx','xls','docx','zip','jpg','jpeg','png'];
+const ADJUNTO_DIR      = 'assets/archivos/';
+
+// Crea las columnas de adjunto en novedades si todavía no existen (MariaDB)
+function asegurar_adjuntos_novedades(): void {
+    static $hecho = false;
+    if ($hecho) return;
+    $hecho = true;
+    try {
+        db()->exec("ALTER TABLE novedades
+                      ADD COLUMN IF NOT EXISTS adjunto VARCHAR(255) NULL,
+                      ADD COLUMN IF NOT EXISTS adjunto_nombre VARCHAR(255) NULL");
+    } catch (Throwable $e) { /* sin permisos de ALTER: el adjunto queda deshabilitado */ }
+}
+
+// Bytes a partir de un valor de php.ini ("128M", "2G")
+function ini_bytes(string $v): int {
+    $v = trim($v); if ($v === '') return 0;
+    $n = (int)$v; $u = strtolower(substr($v, -1));
+    return $u === 'g' ? $n << 30 : ($u === 'm' ? $n << 20 : ($u === 'k' ? $n << 10 : $n));
+}
+
+// Tamaño máximo de subida real: el menor entre el límite propio y los del servidor
+function limite_subida_bytes(): int {
+    $lim = ADJUNTO_MAX_MB << 20;
+    foreach (['upload_max_filesize', 'post_max_size'] as $k) {
+        $b = ini_bytes((string)ini_get($k));
+        if ($b > 0) $lim = min($lim, $b);
+    }
+    return $lim;
+}
+
+function tam_legible(int $bytes): string {
+    if ($bytes >= 1048576) return number_format($bytes / 1048576, 1, ',', '.') . ' MB';
+    return max(1, (int)round($bytes / 1024)) . ' KB';
+}
+
 // Autoload de composer (PhpSpreadsheet, Dompdf)
 function cargar_vendor(): bool {
     static $ok = null;

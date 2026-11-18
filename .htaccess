@@ -7,7 +7,7 @@
 Options -Indexes
 
 # Proteger archivos sensibles
-<FilesMatch "^(config\.php|credenciales\.php|credenciales\.ejemplo\.php|listas_lib\.php|admin_extra\.php|install\.php|\.env|composer\.(json|lock|phar))$">
+<FilesMatch "^(config\.php|credenciales\.php|credenciales\.ejemplo\.php|listas_lib\.php|productos_excel\.php|admin_extra\.php|install\.php|\.env|\.user\.ini|config\.backup-.*\.php|composer\.(json|lock|phar))$">
     Order Allow,Deny
     Deny from all
 </FilesMatch>

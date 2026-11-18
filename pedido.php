@@ -243,6 +243,8 @@ $novedades = get_novedades($lista_id);
 .novedad-titulo{font-family:'Bebas Neue',sans-serif;font-size:1.2rem;color:var(--negro);margin-bottom:.3rem;letter-spacing:.04em}
 .novedad-texto{font-size:.85rem;color:#444;line-height:1.5}
 .novedad-img{width:100%;max-height:180px;object-fit:cover}
+.novedad-desc{display:inline-flex;align-items:center;gap:.5rem;margin-top:.7rem;background:var(--negro);color:#fff;text-decoration:none;font-size:.82rem;font-weight:600;padding:.55rem .9rem;border-radius:7px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.novedad-desc span{color:#aaa;font-weight:400;font-size:.75rem}
 
 /* ── Botones +/− ─────────────────────────────────────────── */
 .qty-ctrl{display:flex;align-items:center;gap:5px}
@@ -346,6 +348,12 @@ $novedades = get_novedades($lista_id);
       <div class="novedad-body">
         <div class="novedad-titulo">📢 <?= escape($nov['titulo']) ?></div>
         <div class="novedad-texto"><?= nl2br(escape($nov['contenido'])) ?></div>
+        <?php if (!empty($nov['adjunto']) && is_file(__DIR__.'/'.ADJUNTO_DIR.$nov['adjunto'])): ?>
+          <a class="novedad-desc" href="<?= ADJUNTO_DIR . escape($nov['adjunto']) ?>" target="_blank" download="<?= escape($nov['adjunto_nombre'] ?: $nov['adjunto']) ?>">
+            📥 Descargar <?= escape($nov['adjunto_nombre'] ?: 'archivo') ?>
+            <span><?= tam_legible(filesize(__DIR__.'/'.ADJUNTO_DIR.$nov['adjunto'])) ?></span>
+          </a>
+        <?php endif; ?>
       </div>
     </div>
     <?php endforeach; ?>

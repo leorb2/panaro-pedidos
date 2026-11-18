@@ -19,28 +19,62 @@ function handle_extra_actions(string $action, string &$flash_ok, string &$flash_
         $vence   = trim($_POST['vence_en'] ?? '') ?: null;
         $orden   = (int)($_POST['orden'] ?? 0);
         $img     = $_POST['img_actual'] ?? null;
+        asegurar_adjuntos_novedades();
+        $adj     = $nid ? db()->query('SELECT adjunto, adjunto_nombre FROM novedades WHERE id='.$nid)->fetch() : false;
+        $adj_arch = $adj['adjunto'] ?? null;
+        $adj_nom  = $adj['adjunto_nombre'] ?? null;
+        $adj_viejo = null;
 
         if (!empty($_FILES['imagen_nov']['name'])) {
             $ext = strtolower(pathinfo($_FILES['imagen_nov']['name'], PATHINFO_EXTENSION));
-            if (in_array($ext,['jpg','jpeg','png','webp','gif']) && $_FILES['imagen_nov']['size'] < 3*1024*1024) {
+            if (in_array($ext,['jpg','jpeg','png','webp','gif']) && $_FILES['imagen_nov']['size'] < 10*1024*1024) {
                 $dir = __DIR__.'/assets/img/novedades/';
                 if (!is_dir($dir)) mkdir($dir, 0755, true);
                 $nuevo = uniqid('nov_').'.'.$ext;
                 if (move_uploaded_file($_FILES['imagen_nov']['tmp_name'], $dir.$nuevo)) $img = $nuevo;
-            } else { $flash_err = 'Imagen inválida (máx 3MB, JPG/PNG/WEBP).'; }
+            } else { $flash_err = 'Imagen inválida (máx 10MB, JPG/PNG/WEBP).'; }
+        }
+
+        // Archivo adjunto (catálogo PDF, etc.)
+        if (!empty($_POST['quitar_adjunto'])) { $adj_viejo = $adj_arch; $adj_arch = $adj_nom = null; }
+        if (!empty($_FILES['adjunto_nov']['name'])) {
+            $f   = $_FILES['adjunto_nov'];
+            $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
+            $lim = limite_subida_bytes();
+            if ($f['error'] === UPLOAD_ERR_INI_SIZE || $f['error'] === UPLOAD_ERR_FORM_SIZE || $f['size'] > $lim) {
+                $flash_err = 'El archivo supera el máximo permitido (' . tam_legible($lim) . ').';
+            } elseif ($f['error'] !== UPLOAD_ERR_OK || !is_uploaded_file($f['tmp_name'])) {
+                $flash_err = 'No se pudo subir el archivo (error ' . (int)$f['error'] . ').';
+            } elseif (!in_array($ext, ADJUNTO_EXT, true)) {
+                $flash_err = 'Tipo de archivo no permitido. Aceptados: ' . strtoupper(implode(', ', ADJUNTO_EXT)) . '.';
+            } else {
+                $dir = __DIR__ . '/' . ADJUNTO_DIR;
+                if (!is_dir($dir)) mkdir($dir, 0755, true);
+                $base  = pathinfo($f['name'], PATHINFO_FILENAME);
+                $slug  = trim(preg_replace('/[^a-z0-9]+/', '-', strtolower(iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $base) ?: 'archivo')), '-') ?: 'archivo';
+                $nuevo = substr($slug, 0, 60) . '-' . bin2hex(random_bytes(4)) . '.' . $ext;
+                if (move_uploaded_file($f['tmp_name'], $dir . $nuevo)) {
+                    $adj_viejo = $adj_viejo ?: $adj_arch;
+                    $adj_arch  = $nuevo;
+                    $adj_nom   = $base . '.' . $ext;
+                } else { $flash_err = 'No se pudo guardar el archivo en el servidor.'; }
+            }
         }
 
         if ($titulo && $cont && !$flash_err) {
             if ($nid) {
-                db()->prepare('UPDATE novedades SET titulo=?,contenido=?,listas=?,activa=?,vence_en=?,orden=?,imagen=? WHERE id=?')
-                   ->execute([$titulo,$cont,$listas,$activa,$vence,$orden,$img,$nid]);
+                db()->prepare('UPDATE novedades SET titulo=?,contenido=?,listas=?,activa=?,vence_en=?,orden=?,imagen=?,adjunto=?,adjunto_nombre=? WHERE id=?')
+                   ->execute([$titulo,$cont,$listas,$activa,$vence,$orden,$img,$adj_arch,$adj_nom,$nid]);
                 $flash_ok = 'Novedad actualizada.';
             } else {
-                db()->prepare('INSERT INTO novedades (titulo,contenido,listas,activa,vence_en,orden,imagen) VALUES (?,?,?,?,?,?,?)')
-                   ->execute([$titulo,$cont,$listas,$activa,$vence,$orden,$img]);
+                db()->prepare('INSERT INTO novedades (titulo,contenido,listas,activa,vence_en,orden,imagen,adjunto,adjunto_nombre) VALUES (?,?,?,?,?,?,?,?,?)')
+                   ->execute([$titulo,$cont,$listas,$activa,$vence,$orden,$img,$adj_arch,$adj_nom]);
                 $flash_ok = 'Novedad creada.';
             }
+            if ($adj_viejo && $adj_viejo !== $adj_arch) @unlink(__DIR__ . '/' . ADJUNTO_DIR . basename($adj_viejo));
         } elseif (!$flash_err) { $flash_err = 'Completá título y contenido.'; }
+        // Si falló algo después de subir el archivo nuevo, no dejarlo huérfano
+        if ($flash_err && $adj_arch && $adj_arch !== ($adj['adjunto'] ?? null)) @unlink(__DIR__ . '/' . ADJUNTO_DIR . basename($adj_arch));
         $seccion = 'novedades';
     }
 
@@ -49,6 +83,9 @@ function handle_extra_actions(string $action, string &$flash_ok, string &$flash_
         $flash_ok = 'Novedad actualizada.'; $seccion = 'novedades';
     }
     if ($action === 'borrar_novedad') {
+        asegurar_adjuntos_novedades();
+        $a = db()->prepare('SELECT adjunto FROM novedades WHERE id=?'); $a->execute([(int)$_POST['nid']]);
+        if ($arch = $a->fetchColumn()) @unlink(__DIR__ . '/' . ADJUNTO_DIR . basename($arch));
         db()->prepare('DELETE FROM novedades WHERE id=?')->execute([(int)$_POST['nid']]);
         $flash_ok = 'Novedad eliminada.'; $seccion = 'novedades';
     }
@@ -103,6 +140,7 @@ function handle_extra_actions(string $action, string &$flash_ok, string &$flash_
 
 // ── Render sección NOVEDADES ─────────────────────────────────
 function render_novedades(string $flash_ok, string $flash_err): void {
+    asegurar_adjuntos_novedades();
     $editar = null;
     if (isset($_GET['editar_nov'])) {
         $s = db()->prepare('SELECT * FROM novedades WHERE id=? LIMIT 1');
@@ -129,10 +167,18 @@ function render_novedades(string $flash_ok, string $flash_err): void {
             <textarea name="contenido" rows="4"
                       style="width:100%;padding:.55rem .8rem;border:1.5px solid var(--gris-2);border-radius:6px;font-family:inherit;font-size:.9rem;outline:none;resize:vertical"
                       placeholder="Texto de la novedad..."><?= escape($editar['contenido']??'') ?></textarea></div>
-          <div class="field"><label>Imagen (opcional, máx 3MB)</label>
+          <div class="field"><label>Imagen (opcional, máx 10MB)</label>
             <input type="file" name="imagen_nov" accept="image/*">
             <?php if (!empty($editar['imagen'])): ?>
               <small style="color:var(--gris-4)">Actual: <?= escape($editar['imagen']) ?></small>
+            <?php endif; ?>
+          </div>
+          <div class="field"><label>Archivo para descargar (opcional, máx <?= tam_legible(limite_subida_bytes()) ?>)</label>
+            <input type="file" name="adjunto_nov" accept=".<?= implode(',.', ADJUNTO_EXT) ?>">
+            <small style="color:var(--gris-4);display:block;margin-top:.25rem">Catálogo, folleto, ficha… Aparece como botón de descarga en la novedad y en «Listas de precios».</small>
+            <?php if (!empty($editar['adjunto'])): ?>
+              <small style="display:block;margin-top:.3rem">Actual: <a href="<?= ADJUNTO_DIR . escape($editar['adjunto']) ?>" target="_blank"><?= escape($editar['adjunto_nombre'] ?: $editar['adjunto']) ?></a>
+              <label style="display:inline-flex;align-items:center;gap:.25rem;margin-left:.5rem;font-weight:400;text-transform:none;letter-spacing:0"><input type="checkbox" name="quitar_adjunto" value="1"> quitar</label></small>
             <?php endif; ?>
           </div>
           <div class="field"><label>Fecha de vencimiento (opcional)</label>
@@ -177,6 +223,9 @@ function render_novedades(string $flash_ok, string $flash_err): void {
         <?php endif; ?>
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:.95rem;color:var(--negro)"><?= escape($n['titulo']) ?></div>
+          <?php if (!empty($n['adjunto'])): ?>
+            <a href="<?= ADJUNTO_DIR . escape($n['adjunto']) ?>" target="_blank" style="font-size:.75rem;color:#7c3aed;font-weight:600;text-decoration:none">📎 <?= escape($n['adjunto_nombre'] ?: $n['adjunto']) ?><?php $fp = __DIR__.'/'.ADJUNTO_DIR.$n['adjunto']; if (is_file($fp)) echo ' · '.tam_legible(filesize($fp)); ?></a>
+          <?php endif; ?>
           <div style="font-size:.78rem;color:var(--gris-4);margin:.2rem 0"><?= mb_substr(escape($n['contenido']),0,80) ?>...</div>
           <div style="display:flex;gap:.3rem;flex-wrap:wrap;margin-top:.3rem">
             <?php foreach ($bits_activos as $b): ?>

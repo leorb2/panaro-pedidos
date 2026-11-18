@@ -133,4 +133,6 @@ jobs:
           chk assets/fonts/herosc-bold.ttf 200
           chk credenciales.php 403
           chk cache/ 403
+          chk assets/archivos/ 403
+          chk .user.ini 403
           exit $FALLA

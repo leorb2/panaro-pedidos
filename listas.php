@@ -14,6 +14,10 @@ $lista_nombre = nombre_lista($lista_id);
 $lista_color  = color_lista($lista_id);
 $listas       = listas_permitidas($u);
 $hoy          = date('d/m/Y');
+
+// Archivos adjuntos de novedades activas visibles para esta lista (catálogo, folletos…)
+$descargas = array_values(array_filter(get_novedades($lista_id), fn($n) =>
+    !empty($n['adjunto']) && is_file(__DIR__ . '/' . ADJUNTO_DIR . $n['adjunto'])));
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -46,6 +50,8 @@ $hoy          = date('d/m/Y');
 .btn-share{background:#25d366;color:#fff;display:none}
 .btn-share.on{display:block}
 .btn-desc{background:var(--gris-2);color:var(--negro)}
+.sub-titulo{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;letter-spacing:.04em;margin:1.8rem 0 .8rem;color:var(--negro)}
+.lista-card .franja.cat{border-bottom-color:#c8a800}
 .nota{font-size:.78rem;color:var(--gris-4);margin-top:1.2rem;line-height:1.5}
 </style>
 </head>
@@ -77,7 +83,7 @@ $hoy          = date('d/m/Y');
   </div>
 
   <div class="pedido-header">
-    <h2>Listas de precios</h2>
+    <h2>Listas de precios<?= $descargas ? ' y catálogo' : '' ?></h2>
     <div style="font-size:.8rem;color:var(--gris-4)">Vigentes al <strong><?= $hoy ?></strong></div>
   </div>
 
@@ -106,6 +112,31 @@ $hoy          = date('d/m/Y');
     <?php endforeach; ?>
   </div>
 
+  <?php if ($descargas): ?>
+  <h3 class="sub-titulo">Catálogo y descargas</h3>
+  <div class="listas-grid">
+    <?php foreach ($descargas as $d):
+      $ruta = ADJUNTO_DIR . $d['adjunto'];
+      $nom  = $d['adjunto_nombre'] ?: $d['adjunto'];
+      $ext  = strtoupper(pathinfo($d['adjunto'], PATHINFO_EXTENSION)); ?>
+    <div class="lista-card">
+      <div class="franja cat">
+        <h3><?= escape($d['titulo']) ?></h3>
+        <small><?= $ext ?> · <?= tam_legible(filesize(__DIR__ . '/' . $ruta)) ?></small>
+      </div>
+      <div class="cuerpo">
+        <p><?= nl2br(escape(mb_strimwidth($d['contenido'], 0, 220, '…'))) ?></p>
+        <div class="acciones">
+          <?php if ($ext === 'PDF'): ?><a class="btn-ver" href="<?= escape($ruta) ?>" target="_blank">Ver</a><?php endif; ?>
+          <button type="button" class="btn-share" data-url="<?= escape($ruta) ?>" data-nombre="<?= escape($nom) ?>">Compartir</button>
+          <a class="btn-desc" href="<?= escape($ruta) ?>" download="<?= escape($nom) ?>">Descargar</a>
+        </div>
+      </div>
+    </div>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
+
   <p class="nota">
     Las listas se arman al momento con los precios vigentes del portal.
     <?php if (isset($listas['punto_venta']) && isset($listas['distribuidor'])): ?>
@@ -130,10 +161,11 @@ $hoy          = date('d/m/Y');
     btn.addEventListener('click', function () {
       var txt = btn.textContent;
       btn.textContent = 'Preparando…'; btn.disabled = true;
-      fetch('lista_pdf.php?l=' + encodeURIComponent(btn.dataset.l), { credentials: 'same-origin' })
+      var url = btn.dataset.url || ('lista_pdf.php?l=' + encodeURIComponent(btn.dataset.l));
+      fetch(url, { credentials: 'same-origin' })
         .then(function (r) { if (!r.ok) throw new Error(); return r.blob(); })
         .then(function (b) {
-          var f = new File([b], btn.dataset.nombre, { type: 'application/pdf' });
+          var f = new File([b], btn.dataset.nombre, { type: b.type || 'application/pdf' });
           return navigator.share({ files: [f], title: btn.dataset.nombre });
         })
         .catch(function () {})

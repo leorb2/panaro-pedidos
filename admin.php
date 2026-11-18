@@ -12,6 +12,10 @@ $flash_ok  = '';
 $flash_err = '';
 
 // ── Acciones POST ────────────────────────────────────────────
+// Si el archivo supera post_max_size, PHP descarta todo el POST sin avisar
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($_POST) && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+    $flash_err = 'El archivo es demasiado grande para el servidor (máximo ' . tam_legible(limite_subida_bytes()) . ').';
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
@@ -231,7 +235,9 @@ if ($seccion === 'pedidos') {
         $s->execute([(int)$_GET['ver']]);
         $ver_ped = $s->fetch();
         if ($ver_ped) {
-            $s2 = db()->prepare('SELECT * FROM pedido_items WHERE pedido_id=? ORDER BY id');
+            $s2 = db()->prepare('SELECT i.*, pr.codigo AS sku FROM pedido_items i
+                                 LEFT JOIN productos pr ON pr.id = i.producto_id
+                                 WHERE i.pedido_id=? ORDER BY i.id');
             $s2->execute([$ver_ped['id']]);
             $ver_ped['items'] = $s2->fetchAll();
         }
@@ -339,11 +345,12 @@ function estado_label(string $e): string {
         <span class="estado-badge estado-<?= $ver_ped['estado'] ?>"><?= estado_label($ver_ped['estado']) ?></span>
       </div>
       <table class="det-tabla" style="margin-bottom:1rem">
-        <thead><tr><th>Producto</th><th>Cant.</th><th>Precio unit.</th><th>Subtotal</th></tr></thead>
+        <thead><tr><th>SKU</th><th>Producto</th><th>Cant.</th><th>Precio unit.</th><th>Subtotal</th></tr></thead>
         <tbody>
           <?php foreach ($ver_ped['items'] as $it):
             $es_reg = !empty($it['es_regalo']) || (float)$it['precio_unit'] == 0; ?>
           <tr <?= $es_reg ? 'style="background:#f0fdf4"' : '' ?>>
+            <td style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.8rem;font-weight:700;white-space:nowrap"><?= escape($it['sku'] ?? '—') ?></td>
             <td><?= escape($it['nombre']) ?></td>
             <td><?= $it['cantidad'] ?></td>
             <td><?= $es_reg ? '<span style="color:#16a34a;font-weight:700">REGALO</span>' : precio_fmt((float)$it['precio_unit']) ?></td>
@@ -354,14 +361,14 @@ function estado_label(string $e): string {
         <tfoot>
           <?php if ($ver_ped['monto_descuento'] > 0): ?>
           <tr>
-            <td colspan="3" style="text-align:right;color:#22c55e;font-size:.88rem">
+            <td colspan="4" style="text-align:right;color:#22c55e;font-size:.88rem">
               Descuento (<?= escape($ver_ped['codigo_descuento']) ?>)
             </td>
             <td style="color:#22c55e;font-weight:700">− <?= precio_fmt((float)$ver_ped['monto_descuento']) ?></td>
           </tr>
           <?php endif; ?>
           <tr>
-            <td colspan="3">TOTAL<?= $ver_ped['monto_descuento'] > 0 ? ' CON DESCUENTO' : '' ?></td>
+            <td colspan="4">TOTAL<?= $ver_ped['monto_descuento'] > 0 ? ' CON DESCUENTO' : '' ?></td>
             <td><?= precio_fmt((float)($ver_ped['total_con_dto'] ?: $ver_ped['total'])) ?></td>
           </tr>
         </tfoot>
@@ -379,6 +386,7 @@ function estado_label(string $e): string {
         <a href="editar_pedido.php?id=<?= $ver_ped['id'] ?>" class="btn-sm" style="text-decoration:none;background:#0d0d0d">✏️ Editar pedido</a>
         <a href="exportar_pedido.php?id=<?= $ver_ped['id'] ?>&f=pdf" target="_blank" class="btn-sm" style="text-decoration:none;background:#dc2626">📄 Ver PDF</a>
         <a href="exportar_pedido.php?id=<?= $ver_ped['id'] ?>&f=excel" class="btn-sm" style="text-decoration:none;background:#16a34a">📊 Excel</a>
+        <a href="exportar_pedido.php?id=<?= $ver_ped['id'] ?>&f=packing" target="_blank" class="btn-sm" style="text-decoration:none;background:#7c3aed">📦 Packing list</a>
       </div>
 
       <form method="post" class="form-inline" style="margin-top:.8rem;flex-wrap:wrap;gap:.5rem">
@@ -509,6 +517,7 @@ function estado_label(string $e): string {
               <a href="?s=pedidos&ver=<?= $p['id'] ?>" class="btn-det">Ver</a>
               <a href="editar_pedido.php?id=<?= $p['id'] ?>" class="btn-det" style="border-color:#0d0d0d;color:#0d0d0d">Editar</a>
               <a href="exportar_pedido.php?id=<?= $p['id'] ?>&f=pdf" target="_blank" class="btn-det" style="border-color:#dc2626;color:#dc2626">PDF</a>
+              <a href="exportar_pedido.php?id=<?= $p['id'] ?>&f=packing" target="_blank" class="btn-det" style="border-color:#7c3aed;color:#7c3aed" title="Packing list sin precios">Packing</a>
               <form method="post" style="display:inline" onsubmit="return confirmarBorradoLista(<?= $p['id'] ?>)">
                 <input type="hidden" name="action" value="borrar_pedido">
                 <input type="hidden" name="pedido_id" value="<?= $p['id'] ?>">

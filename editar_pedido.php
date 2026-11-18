@@ -215,10 +215,13 @@ $ediciones = $ediciones->fetchAll();
 .edit-head{background:var(--blanco);border-radius:10px;padding:1.2rem;box-shadow:var(--sombra);margin-bottom:1.2rem}
 .edit-warn{background:#fff8e6;border:1.5px solid #f0b429;color:#7a5200;padding:.8rem 1rem;border-radius:8px;font-size:.86rem;margin-bottom:1.2rem;line-height:1.5}
 
-.prod-edit{display:grid;grid-template-columns:48px 1fr 120px 150px 120px;gap:.7rem;align-items:center;padding:.65rem .9rem;border-bottom:1px solid var(--gris-2)}
+.prod-edit{display:grid;grid-template-columns:48px 100px 1fr 120px 150px 120px;gap:.7rem;align-items:center;padding:.65rem .9rem;border-bottom:1px solid var(--gris-2)}
 .prod-edit:last-child{border-bottom:none}
 .prod-edit:hover{background:#fafafa}
 .prod-edit.activo{background:#fff8f8}
+.pe-sku{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.78rem;font-weight:700;color:#333;word-break:break-all}
+.pe-sku-mob{display:none}
+.pe-cab{display:grid;grid-template-columns:48px 100px 1fr 120px 150px 120px;gap:.7rem;padding:.55rem .9rem;background:#f4f4f4;border-bottom:1px solid var(--gris-2);font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--gris-4)}
 .prod-edit img,.prod-ph{width:44px;height:44px;object-fit:cover;border-radius:6px;background:var(--gris-2);display:flex;align-items:center;justify-content:center;font-size:18px}
 
 .qty-ctrl{display:flex;align-items:center;gap:5px;justify-content:center}
@@ -252,6 +255,8 @@ $ediciones = $ediciones->fetchAll();
   html,body{overflow-x:hidden}
   .prod-edit{grid-template-columns:44px 1fr auto;grid-template-rows:auto auto;gap:.3rem .6rem}
   .prod-edit img,.prod-ph{grid-row:1/3}
+  .pe-cab,.pe-sku{display:none}
+  .pe-sku-mob{display:block}
   .pe-info{grid-column:2;grid-row:1}
   .pe-precio{grid-column:3;grid-row:1;text-align:right;font-size:.88rem}
   .qty-ctrl{grid-column:2;grid-row:2;justify-content:flex-start}
@@ -308,6 +313,7 @@ $ediciones = $ediciones->fetchAll();
     <input type="hidden" name="pedido_id" value="<?= $pid ?>">
 
     <div class="tabla-pedido">
+      <div class="pe-cab"><span></span><span>SKU</span><span>Producto</span><span style="text-align:right">Precio</span><span style="text-align:center">Cantidad</span><span style="text-align:right">Subtotal</span></div>
       <?php foreach ($productos as $p):
         $q   = $qty_actual[(int)$p['id']] ?? 0;
         $pr  = (float)$p['mi_precio'];
@@ -319,10 +325,12 @@ $ediciones = $ediciones->fetchAll();
           <div class="prod-ph">🧴</div>
         <?php endif; ?>
 
+        <div class="pe-sku"><?= escape($p['codigo']) ?></div>
+
         <div class="pe-info">
           <div style="font-weight:600;font-size:.9rem;line-height:1.25"><?= escape($p['nombre']) ?></div>
           <?php if (!empty($p['presentacion'])): ?><div style="font-size:.76rem;color:#444"><?= escape(presentacion_corta($p['presentacion'])) ?></div><?php endif; ?>
-          <div style="font-size:.7rem;color:#aaa"><?= escape($p['codigo']) ?></div>
+          <div class="pe-sku-mob" style="font-size:.7rem;color:#888;font-family:ui-monospace,Menlo,Consolas,monospace"><?= escape($p['codigo']) ?></div>
           <?php if ($promo12_aplica): ?>
             <div id="reg-<?= $p['id'] ?>" class="regalo-tag" style="display:none"></div>
           <?php endif; ?>
