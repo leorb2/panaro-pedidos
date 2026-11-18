@@ -128,6 +128,60 @@ if ($action === 'editar_usuario') {
         $seccion = 'usuarios';
     }
 
+    // ── Borrar usuarios (uno o varios) ───────────────────────
+    // Requiere confirmar=SI. Si alguno tiene pedidos, además borrar_pedidos=1
+    // (el formulario pide escribir BORRAR). Nunca borra administradores ni a uno mismo.
+    if ($action === 'borrar_usuarios') {
+        $uids = array_values(array_unique(array_filter(array_map('intval', (array)($_POST['uids'] ?? [])))));
+        $yo   = (int)($_SESSION['user_id'] ?? 0);
+        if (($_POST['confirmar'] ?? '') !== 'SI') {
+            $flash_err = 'El borrado no fue confirmado.';
+        } elseif (!$uids) {
+            $flash_err = 'No seleccionaste ningún usuario.';
+        } else {
+            $in = implode(',', $uids);   // enteros ya validados
+            $us = db()->query("SELECT u.id, u.nombre, u.es_admin, COUNT(p.id) AS npedidos
+                               FROM usuarios u LEFT JOIN pedidos p ON p.usuario_id = u.id
+                               WHERE u.id IN ($in) GROUP BY u.id")->fetchAll();
+            $us = array_filter($us, fn($u) => !$u['es_admin'] && (int)$u['id'] !== $yo);
+            $con_pedidos = array_sum(array_column($us, 'npedidos'));
+            if (!$us) {
+                $flash_err = 'Esos usuarios no se pueden borrar (los administradores no se borran).';
+            } elseif ($con_pedidos > 0 && ($_POST['borrar_pedidos'] ?? '') !== '1') {
+                $flash_err = 'Hay usuarios con pedidos: para borrarlos tenés que confirmar que también se borran sus pedidos.';
+            } else {
+                try {
+                    $db  = db();
+                    $ids = implode(',', array_map(fn($u) => (int)$u['id'], $us));
+                    $db->beginTransaction();
+                    // Pedidos: devolver usos de códigos y borrar PDFs (ítems e historial van en cascada)
+                    $peds = $db->query("SELECT id, codigo_descuento FROM pedidos WHERE usuario_id IN ($ids)")->fetchAll();
+                    $dto  = $db->prepare('UPDATE codigos_descuento SET usos_actuales = GREATEST(0, usos_actuales - 1) WHERE codigo = ?');
+                    foreach ($peds as $pd) if ($pd['codigo_descuento']) $dto->execute([$pd['codigo_descuento']]);
+                    $db->exec("DELETE FROM pedidos WHERE usuario_id IN ($ids)");
+                    // Códigos de descuento exclusivos de esos usuarios (si quedaran sin dueño valdrían para todos)
+                    $ncod = $db->exec("DELETE FROM codigos_descuento WHERE usuario_id IN ($ids)");
+                    $db->exec("DELETE FROM usuarios WHERE id IN ($ids) AND es_admin = 0");
+                    $db->commit();
+                    foreach ($peds as $pd) foreach (glob(__DIR__.'/pdf/pedido_'.(int)$pd['id'].'_*.pdf') ?: [] as $f) @unlink($f);
+
+                    $nombres = implode(', ', array_map(fn($u) => '«'.$u['nombre'].'»', $us));
+                    $extra = [];
+                    if ($peds) $extra[] = count($peds).' pedido'.(count($peds) > 1 ? 's' : '');
+                    if ($ncod) $extra[] = $ncod.' código'.($ncod > 1 ? 's' : '').' de descuento exclusivo'.($ncod > 1 ? 's' : '');
+                    $flash_ok = (count($us) === 1 ? "Usuario $nombres eliminado" : count($us)." usuarios eliminados: $nombres")
+                              . ($extra ? ' — junto con '.implode(' y ', $extra) : '') . '.';
+                    if (count($us) < count($uids)) $flash_ok .= ' (Los administradores no se borran.)';
+                } catch (Throwable $e) {
+                    if (db()->inTransaction()) db()->rollBack();
+                    $flash_err = 'No se pudo borrar: ' . $e->getMessage();
+                }
+            }
+        }
+        $seccion = 'usuarios';
+        unset($_GET['editar']);
+    }
+
     if ($action === 'toggle_usuario') {
         db()->prepare('UPDATE usuarios SET activo=1-activo WHERE id=? AND es_admin=0')
            ->execute([(int)$_POST['uid']]);
@@ -242,9 +296,13 @@ if ($seccion === 'pedidos') {
             $ver_ped['items'] = $s2->fetchAll();
         }
     }
-    $pedidos = db()->query('SELECT p.*,u.nombre AS unom,u.email AS uemail,u.lista_id AS ulista
-                            FROM pedidos p JOIN usuarios u ON p.usuario_id=u.id
-                            ORDER BY p.created_at DESC LIMIT 200')->fetchAll();
+    $filtro_u = (int)($_GET['u'] ?? 0);   // ?u=ID → solo los pedidos de ese cliente
+    $sp = db()->prepare('SELECT p.*,u.nombre AS unom,u.email AS uemail,u.lista_id AS ulista
+                         FROM pedidos p JOIN usuarios u ON p.usuario_id=u.id
+                         WHERE (? = 0 OR p.usuario_id = ?)
+                         ORDER BY p.created_at DESC LIMIT 200');
+    $sp->execute([$filtro_u, $filtro_u]);
+    $pedidos = $sp->fetchAll();
 }
 
 if ($seccion === 'usuarios') {
@@ -253,7 +311,9 @@ if ($seccion === 'usuarios') {
         $s->execute([(int)$_GET['editar']]);
         $edit_u = $s->fetch();
     }
-    $usuarios = db()->query('SELECT * FROM usuarios ORDER BY es_admin ASC, nombre ASC')->fetchAll();
+    $usuarios = db()->query('SELECT u.*, COUNT(p.id) AS npedidos, MAX(p.created_at) AS ultimo_pedido
+                             FROM usuarios u LEFT JOIN pedidos p ON p.usuario_id = u.id
+                             GROUP BY u.id ORDER BY u.es_admin ASC, u.nombre ASC')->fetchAll();
 }
 
 if ($seccion === 'productos') {
@@ -491,7 +551,10 @@ function estado_label(string $e): string {
     </div>
     <?php endif; ?>
 
-    <h2 style="font-family:'Bebas Neue',sans-serif;font-size:1.6rem;margin-bottom:1rem">Todos los pedidos</h2>
+    <h2 style="font-family:'Bebas Neue',sans-serif;font-size:1.6rem;margin-bottom:1rem">
+      <?= $filtro_u && $pedidos ? 'Pedidos de ' . escape($pedidos[0]['unom']) : 'Todos los pedidos' ?>
+      <?php if ($filtro_u): ?><a href="?s=pedidos" style="font-family:inherit;font-size:.8rem;margin-left:.6rem;color:var(--gris-4)">ver todos</a><?php endif; ?>
+    </h2>
     <div style="overflow-x:auto">
       <table class="hist-tabla">
         <thead><tr><th>#</th><th>Fecha</th><th>Cliente</th><th>Lista</th><th>Total</th><th>Estado</th><th></th></tr></thead>
@@ -602,12 +665,22 @@ function estado_label(string $e): string {
       </form>
     </div>
 
+    <div class="usr-barra">
+      <span id="usr-sel-txt">Marcá usuarios para borrar varios a la vez.</span>
+      <button type="button" class="btn-sm" id="usr-sel-btn" style="background:#dc2626" disabled
+              onclick="pedirBorrado(seleccionados())">🗑️ Eliminar seleccionados</button>
+    </div>
     <div style="overflow-x:auto">
       <table class="hist-tabla">
-        <thead><tr><th>Nombre</th><th>Email</th><th>Lista</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+        <thead><tr><th style="width:28px"><input type="checkbox" id="usr-todos" title="Seleccionar todos"></th><th>Nombre</th><th>Email</th><th>Lista</th><th>Pedidos</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
         <tbody>
           <?php foreach ($usuarios as $uu): ?>
           <tr>
+            <td><?php if (!$uu['es_admin'] && (int)$uu['id'] !== (int)($_SESSION['user_id'] ?? 0)): ?>
+              <input type="checkbox" class="usr-chk" value="<?= $uu['id'] ?>"
+                     data-nombre="<?= escape($uu['nombre']) ?>" data-email="<?= escape($uu['email']) ?>"
+                     data-pedidos="<?= (int)$uu['npedidos'] ?>">
+            <?php endif; ?></td>
             <td style="font-weight:600"><?= escape($uu['nombre']) ?></td>
             <td style="font-size:.83rem"><?= escape($uu['email']) ?></td>
             <td>
@@ -616,6 +689,12 @@ function estado_label(string $e): string {
                 <?= nombre_lista($uu['lista_id']) ?>
               </span>
               <?php else: ?> — <?php endif; ?>
+            </td>
+            <td style="font-size:.83rem;white-space:nowrap">
+              <?php if ($uu['npedidos']): ?>
+                <a href="?s=pedidos&u=<?= $uu['id'] ?>" style="color:inherit"><?= (int)$uu['npedidos'] ?></a>
+                <span style="color:var(--gris-3);font-size:.75rem">· <?= date('d/m/y', strtotime($uu['ultimo_pedido'])) ?></span>
+              <?php else: ?><span style="color:var(--gris-3)">—</span><?php endif; ?>
             </td>
             <td><?= $uu['es_admin'] ? '<span class="estado-badge estado-en_preparacion">Admin</span>' : 'Mayorista' ?></td>
             <td><span class="estado-badge <?= $uu['activo']?'estado-enviado':'estado-cancelado' ?>"><?= $uu['activo']?'Activo':'Inactivo' ?></span></td>
@@ -628,6 +707,8 @@ function estado_label(string $e): string {
                 <button type="submit" class="btn-sm" style="background:<?= $uu['activo']?'#888':'#22c55e' ?>">
                   <?= $uu['activo']?'Desactivar':'Activar' ?></button>
               </form>
+              <button type="button" class="btn-det" style="border-color:#dc2626;color:#dc2626"
+                      onclick="pedirBorrado([this.closest('tr').querySelector('.usr-chk')])">Eliminar</button>
               <?php endif; ?>
             </td>
           </tr>
@@ -635,6 +716,88 @@ function estado_label(string $e): string {
         </tbody>
       </table>
     </div>
+
+    <!-- Confirmación de borrado -->
+    <div class="modal-fondo" id="modal-borrar" hidden>
+      <form method="post" class="modal-caja" id="form-borrar" onsubmit="return validarBorrado()">
+        <input type="hidden" name="action" value="borrar_usuarios">
+        <input type="hidden" name="confirmar" value="SI">
+        <div id="borrar-uids"></div>
+        <h3 id="borrar-titulo">Eliminar usuario</h3>
+        <ul id="borrar-lista"></ul>
+        <div id="borrar-aviso-pedidos" class="modal-aviso" hidden>
+          <strong id="borrar-npedidos"></strong>
+          Se van a borrar también esos pedidos, con sus productos, historial y PDF.
+          Si solo querés que no entre más, usá <em>Desactivar</em>: conserva el historial.
+          <label style="display:block;margin-top:.7rem;font-weight:600">Escribí <code>BORRAR</code> para confirmar:
+            <input type="text" id="borrar-texto" autocomplete="off" style="display:block;width:100%;margin-top:.3rem;padding:.5rem .7rem;border:1.5px solid #fca5a5;border-radius:6px;font:inherit;text-transform:uppercase">
+          </label>
+          <input type="hidden" name="borrar_pedidos" id="borrar-pedidos" value="0">
+        </div>
+        <p style="font-size:.82rem;color:#7f1d1d;margin:.8rem 0 0"><strong>Esta acción no se puede deshacer.</strong></p>
+        <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1.1rem">
+          <button type="button" class="btn-det" onclick="cerrarBorrado()">Cancelar</button>
+          <button type="submit" class="btn-sm" id="borrar-ok" style="background:#dc2626">Eliminar</button>
+        </div>
+      </form>
+    </div>
+    <style>
+    .usr-barra{display:flex;align-items:center;justify-content:space-between;gap:.8rem;flex-wrap:wrap;margin:0 0 .6rem;font-size:.82rem;color:var(--gris-4)}
+    .usr-barra button:disabled{opacity:.35;cursor:default}
+    .modal-fondo{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:1rem;z-index:1000}
+    .modal-fondo[hidden]{display:none}
+    .modal-caja{background:#fff;border-radius:10px;max-width:460px;width:100%;padding:1.3rem 1.4rem;box-shadow:0 12px 40px rgba(0,0,0,.35);max-height:90vh;overflow:auto}
+    .modal-caja h3{font-size:1.1rem;margin:0 0 .7rem;color:#991b1b}
+    .modal-caja ul{margin:0;padding-left:1.1rem;font-size:.88rem;line-height:1.6;max-height:180px;overflow:auto}
+    .modal-caja li small{color:var(--gris-4)}
+    .modal-aviso{margin-top:.9rem;background:#fef2f2;border:1.5px solid #fecaca;border-radius:8px;padding:.8rem .9rem;font-size:.82rem;color:#7f1d1d;line-height:1.5}
+    </style>
+    <script>
+    (function(){
+      const chks = () => [...document.querySelectorAll('.usr-chk')];
+      window.seleccionados = () => chks().filter(c => c.checked);
+      function actualizar(){
+        const n = seleccionados().length;
+        document.getElementById('usr-sel-btn').disabled = !n;
+        document.getElementById('usr-sel-txt').textContent = n ? n + ' seleccionado' + (n>1?'s':'') : 'Marcá usuarios para borrar varios a la vez.';
+      }
+      document.addEventListener('change', e => {
+        if (e.target.id === 'usr-todos') chks().forEach(c => c.checked = e.target.checked);
+        if (e.target.id === 'usr-todos' || e.target.classList.contains('usr-chk')) actualizar();
+      });
+      const esc = t => t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      let conPedidos = 0;
+      window.pedirBorrado = function(lista){
+        lista = lista.filter(Boolean); if (!lista.length) return;
+        conPedidos = lista.reduce((a, c) => a + (+c.dataset.pedidos), 0);
+        document.getElementById('borrar-titulo').textContent =
+          lista.length === 1 ? '¿Eliminar este usuario?' : '¿Eliminar estos ' + lista.length + ' usuarios?';
+        document.getElementById('borrar-lista').innerHTML = lista.map(c =>
+          '<li><strong>' + esc(c.dataset.nombre) + '</strong> <small>' + esc(c.dataset.email) +
+          (+c.dataset.pedidos ? ' · ' + c.dataset.pedidos + ' pedido' + (c.dataset.pedidos>1?'s':'') : ' · sin pedidos') + '</small></li>').join('');
+        document.getElementById('borrar-uids').innerHTML = lista.map(c =>
+          '<input type="hidden" name="uids[]" value="' + (+c.value) + '">').join('');
+        const av = document.getElementById('borrar-aviso-pedidos');
+        av.hidden = !conPedidos;
+        document.getElementById('borrar-npedidos').textContent = conPedidos
+          ? (lista.length === 1 ? 'Este usuario tiene ' : 'Entre todos tienen ') + conPedidos + ' pedido' + (conPedidos>1?'s':'') + '.' : '';
+        document.getElementById('borrar-texto').value = '';
+        document.getElementById('borrar-pedidos').value = conPedidos ? '1' : '0';
+        document.getElementById('modal-borrar').hidden = false;
+        (conPedidos ? document.getElementById('borrar-texto') : document.getElementById('borrar-ok')).focus();
+      };
+      window.cerrarBorrado = () => { document.getElementById('modal-borrar').hidden = true; };
+      window.validarBorrado = function(){
+        if (conPedidos && document.getElementById('borrar-texto').value.trim().toUpperCase() !== 'BORRAR') {
+          const t = document.getElementById('borrar-texto'); t.focus(); t.style.borderColor = '#dc2626';
+          return false;
+        }
+        return true;
+      };
+      document.getElementById('modal-borrar').addEventListener('click', e => { if (e.target.id === 'modal-borrar') cerrarBorrado(); });
+      document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarBorrado(); });
+    })();
+    </script>
 
   <!-- ══════════════════════════════════════════════════════
        PRODUCTOS
