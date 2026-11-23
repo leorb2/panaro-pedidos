@@ -1,0 +1,42 @@
+# Corre un archivo de sql/ contra la base de producción, con backup previo. Solo a mano.
+name: SQL puntual
+on:
+  workflow_dispatch:
+    inputs:
+      archivo:
+        description: 'Archivo dentro de sql/ (ej: 2026-11-23_algo.sql)'
+        required: true
+env:
+  SSH_HOST: 45.132.157.212
+  SSH_PORT: '65002'
+  SSH_USER: u459164554
+  DP: /home/u459164554/domains/panaro.com.ar/public_html/panaro-pedidos
+jobs:
+  sql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ejecutar
+        env:
+          ARCHIVO: ${{ inputs.archivo }}
+        run: |
+          case "$ARCHIVO" in */*|..*|'') echo "Nombre de archivo inválido"; exit 1;; esac
+          [ -f "sql/$ARCHIVO" ] || { echo "No existe sql/$ARCHIVO"; exit 1; }
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -P "$SSH_PORT" "sql/$ARCHIVO" "$SSH_USER@$SSH_HOST:sql_puntual.sql"
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "DP='$DP' bash -s" <<'REMOTO'
+          set -e
+          cd "$DP"
+          eval "$(php -r 'include "credenciales.php"; foreach (["DB_HOST","DB_NAME","DB_USER","DB_PASS"] as $k) echo $k,"=",escapeshellarg(constant($k)),"\n";')"
+          export MYSQL_PWD="$DB_PASS"
+          mkdir -p ~/backups
+          F=~/backups/pedidos-$(date +%Y%m%d-%H%M%S).sql.gz
+          mysqldump -h "$DB_HOST" -u "$DB_USER" --single-transaction "$DB_NAME" | gzip > "$F"
+          echo "Backup: $F ($(du -h "$F" | cut -f1))"
+          mysql -h "$DB_HOST" -u "$DB_USER" --default-character-set=utf8mb4 --table "$DB_NAME" < ~/sql_puntual.sql
+          rm -f ~/sql_puntual.sql
+          rm -rf cache/listas
+          echo "OK"
+          REMOTO
