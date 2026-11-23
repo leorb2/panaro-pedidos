@@ -1,0 +1,28 @@
+# Consulta de solo lectura: lista de productos con precios actuales (CSV en el log)
+name: Consulta productos
+on: workflow_dispatch
+env:
+  SSH_HOST: 45.132.157.212
+  SSH_PORT: '65002'
+  SSH_USER: u459164554
+  DP: /home/u459164554/domains/panaro.com.ar/public_html/panaro-pedidos
+jobs:
+  consulta:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Productos
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "cd '$DP' && php" <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST'] = 'pedidos.panaro.com.ar';
+          require 'config.php';
+          echo "CSV>codigo;activo;seccion;precio_distribuidor;precio_pto_venta;pvp_sugerido;nombre;presentacion\n";
+          foreach (db()->query("SELECT * FROM productos ORDER BY orden, id") as $p)
+            echo "CSV>", implode(';', [$p['codigo'], $p['activo'], $p['seccion'], $p['precio_distribuidor'], $p['precio_pto_venta'], $p['pvp_sugerido'],
+                 str_replace(';', ',', $p['nombre']), str_replace(["\n", ';'], [' | ', ','], strtok((string)$p['presentacion'], "\n") ?: '')]), "\n";
+          echo "CSV>--usuarios por lista--\n";
+          foreach (db()->query("SELECT lista_id, COUNT(*) n FROM usuarios WHERE es_admin=0 GROUP BY lista_id") as $r) echo "CSV>lista {$r['lista_id']}: {$r['n']}\n";
+          PHP
