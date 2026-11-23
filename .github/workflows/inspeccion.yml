@@ -1,0 +1,42 @@
+# Inspección de solo lectura de un pedido y de los logs de error. Solo a mano.
+name: Inspeccion pedido
+on:
+  workflow_dispatch:
+    inputs:
+      pedido:
+        description: 'Número de pedido'
+        required: true
+env:
+  SSH_HOST: 45.132.157.212
+  SSH_PORT: '65002'
+  SSH_USER: u459164554
+  DP: /home/u459164554/domains/panaro.com.ar/public_html/panaro-pedidos
+jobs:
+  ver:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspeccionar
+        env:
+          PEDIDO: ${{ inputs.pedido }}
+        run: |
+          case "$PEDIDO" in ''|*[!0-9]*) echo "Número inválido"; exit 1;; esac
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "PEDIDO=$PEDIDO DP='$DP' bash -s" <<'REMOTO'
+          cd "$DP"
+          echo "INS> == Logs de error recientes =="
+          find ~ -maxdepth 6 \( -name 'error_log' -o -name '*error*.log' -o -name 'php_errors*' \) -mmin -600 -type f 2>/dev/null | grep -v vendor | while read f; do echo "INS> [$f]"; tail -n 25 "$f" | sed 's/^/INS> /'; done
+          ls -la ~/logs 2>/dev/null | sed 's/^/INS> /' | head
+          php -r 'echo "INS> web error_log ini: ", ini_get("error_log"), " log_errors=", ini_get("log_errors"), "\n";'
+          PEDIDO=$PEDIDO php <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST'] = 'pedidos.panaro.com.ar';
+          require 'config.php'; require 'clientes_lib.php';
+          $id = (int)getenv('PEDIDO');
+          $p = db()->query("SELECT p.*, u.email AS uemail, u.es_admin FROM pedidos p JOIN usuarios u ON u.id=p.usuario_id WHERE p.id=$id")->fetch();
+          foreach (['id','usuario_id','es_admin','lista_id','total','total_con_dto','factura','comprobante','impuesto_pct','impuesto_monto','total_a_cobrar','ajuste_pct','condicion_pago','direccion_id','created_at'] as $k) echo "INS> $k = ", var_export($p[$k] ?? null, true), "\n";
+          echo "INS> entrega = ", json_encode($p['entrega'] ?? null, JSON_UNESCAPED_UNICODE), "\n";
+          echo "INS> items = ", db()->query("SELECT COUNT(*) FROM pedido_items WHERE pedido_id=$id")->fetchColumn(), "\n";
+          PHP
+          REMOTO
