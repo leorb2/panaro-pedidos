@@ -1,5 +1,5 @@
 <?php
-// perfil.php — v3: cambio contraseña + dirección por defecto
+// perfil.php — cuenta y contraseña (datos y direcciones: mis_datos.php)
 require 'config.php';
 auth_required();
 $u = current_user();
@@ -37,13 +37,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if ($action === 'guardar_direccion') {
-        $dir = trim($_POST['direccion'] ?? '');
-        db()->prepare('UPDATE usuarios SET direccion=? WHERE id=?')->execute([$dir, $u['id']]);
-        $_SESSION['user']['direccion'] = $dir;
-        $u['direccion'] = $dir;
-        $flash_ok = '✅ Dirección guardada correctamente.';
-    }
 }
 ?>
 <!DOCTYPE html>
@@ -91,6 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <a href="pedido.php">Nuevo pedido</a>
     <a href="historial.php">Mis pedidos</a>
     <a href="listas.php">Listas de precios</a>
+    <a href="mis_datos.php">Mis datos</a>
     <a href="perfil.php" class="activo">Mi perfil</a>
   </div>
   <div class="pedido-header"><h2>Mi Perfil</h2></div>
@@ -114,19 +108,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   </div>
 
-  <!-- Dirección por defecto -->
+  <!-- Datos de facturación y entrega -->
   <div class="perfil-card">
-    <h3 style="font-family:'Bebas Neue',sans-serif;font-size:1.4rem;margin-bottom:1.2rem">Dirección de Envío por Defecto</h3>
-    <p style="font-size:.82rem;color:var(--gris-4);margin-bottom:1rem">Se pre-completa automáticamente en cada pedido. Podés editarla antes de enviar.</p>
-    <form method="post">
-      <input type="hidden" name="action" value="guardar_direccion">
-      <div class="field">
-        <label>Dirección completa</label>
-        <textarea name="direccion" rows="3"
-                  placeholder="Ej: Av. Corrientes 1234, CABA — Lunes a viernes de 9 a 18hs"><?= escape($u['direccion'] ?? '') ?></textarea>
-      </div>
-      <button type="submit" class="btn-enviar" style="max-width:220px;font-size:1rem;padding:.7rem">Guardar dirección</button>
-    </form>
+    <h3 style="font-family:'Bebas Neue',sans-serif;font-size:1.4rem;margin-bottom:.6rem">Datos y direcciones</h3>
+    <p style="font-size:.85rem;color:var(--gris-4);margin-bottom:1rem;line-height:1.5">Tus datos de facturación, contactos, personas autorizadas a retirar y la libreta de direcciones de entrega.</p>
+    <a href="mis_datos.php" class="btn-enviar" style="max-width:220px;font-size:1rem;padding:.7rem;display:block;text-align:center;text-decoration:none">Ver mis datos</a>
   </div>
 
   <!-- Cambio de contraseña -->

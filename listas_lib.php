@@ -248,16 +248,29 @@ function pdf_lista(string $tipo, array $filas, string $base, int $ts): string {
     return $dompdf->output();
 }
 
+// La lista "propia" de un cliente lleva su precio final (ajuste de lista y descuentos por producto).
+// Las demás columnas y listas (las que reenvía a sus clientes) quedan como están.
+function aplicar_precios_cliente(array $filas, string $tipo, ?array $cli): array {
+    if (!$cli || !empty($cli['es_admin']) || !function_exists('precios_cliente')) return $filas;
+    $campo = campo_precio((int)$cli['lista_id']);
+    if ((LISTAS_PDF[$tipo]['columnas'][0]['campo'] ?? '') !== $campo) return $filas;
+    $precios = precios_cliente($cli, $filas);
+    foreach ($filas as &$f) $f[$campo] = $precios[(int)$f['id']]['final'];
+    return $filas;
+}
+
 // PDF con caché por día: se regenera si cambian precios/productos o cambia la fecha
-function pdf_lista_cache(PDO $db, string $tipo, string $base): array {
+function pdf_lista_cache(PDO $db, string $tipo, string $base, ?array $cli = null): array {
     $ts    = time();
-    $filas = filas_lista($db, $tipo);
+    $filas = aplicar_precios_cliente(filas_lista($db, $tipo), $tipo, $cli);
     $clave = md5(LISTAS_PDF_VERSION . '|' . $tipo . '|' . date('Y-m-d', $ts) . '|' . json_encode($filas));
     $dir   = $base . '/cache/listas';
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
     $archivo = $dir . '/' . $tipo . '_' . $clave . '.pdf';
     if (!is_file($archivo)) {
-        foreach (glob($dir . '/' . $tipo . '_*.pdf') ?: [] as $viejo) @unlink($viejo);
+        // limpiar versiones de días anteriores (puede haber una por cliente con precios propios)
+        foreach (glob($dir . '/' . $tipo . '_*.pdf') ?: [] as $viejo)
+            if (filemtime($viejo) < strtotime('today')) @unlink($viejo);
         @file_put_contents($archivo, pdf_lista($tipo, $filas, $base, $ts));
     }
     $nombre = LISTAS_PDF[$tipo]['archivo'] . ' ' . date('d-m-Y', $ts) . '.pdf';

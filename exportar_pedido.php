@@ -7,6 +7,7 @@
 //  ?id=24&f=packing    → packing list en PDF (SKU, producto y cantidad, sin precios)
 // ============================================================
 require 'config.php';
+require 'clientes_lib.php';
 admin_required();
 
 $pid    = (int)($_GET['id'] ?? 0);
@@ -29,6 +30,7 @@ $si = db()->prepare('SELECT i.*, pr.codigo AS sku FROM pedido_items i
                      WHERE i.pedido_id=? ORDER BY i.es_regalo ASC, i.id ASC');
 $si->execute([$pid]);
 $items = $si->fetchAll();
+$cli   = cliente((int)$ped['usuario_id']) ?? [];
 
 $lista_nombre = nombre_lista((int)$ped['lista_id']);
 $lista_color  = color_lista((int)$ped['lista_id']);
@@ -41,11 +43,44 @@ $estados = ['pendiente'=>'Pendiente','en_preparacion'=>'En preparación',
             'enviado'=>'Enviado','cancelado'=>'Cancelado'];
 $estado_txt = $estados[$ped['estado']] ?? $ped['estado'];
 
+// ── Bloques compartidos (PDF del pedido y packing list) ──────
+function bloque_entrega_html(array $ped, array $cli, bool $packing = false): string {
+    $txt = trim((string)($ped['entrega'] ?? ''));
+    if ($txt === '') {
+        if (empty($ped['envio_info'])) return '';
+        return '<p style="margin:3px 0;font-size:10px"><strong>Envío:</strong> '.htmlspecialchars($ped['envio_info']).'</p>';
+    }
+    $lineas = explode("\n", $txt);
+    $titulo = array_shift($lineas);
+    $h = '<div style="border:1px solid #ddd;border-radius:4px;padding:8px 10px;margin:4px 0 8px;font-size:'.($packing ? '10.5' : '10').'px;line-height:1.5">
+            <div style="font-size:8px;text-transform:uppercase;color:#888;letter-spacing:.5px;margin-bottom:2px">Entrega</div>
+            <div style="font-weight:bold">'.htmlspecialchars($titulo).'</div>';
+    foreach ($lineas as $l) $h .= '<div>'.htmlspecialchars($l).'</div>';
+    if ($packing && !empty($cli['contacto_nombre'])) $h .= '<div>Contacto: '.htmlspecialchars($cli['contacto_nombre'].($cli['contacto_tel'] ? ' · '.$cli['contacto_tel'] : '')).'</div>';
+    return $h.'</div>';
+}
+
+function bloque_condiciones_html(array $ped, array $cli): string {
+    $fis  = $cli ? datos_fiscales_txt($cli) : [];
+    $cond = condiciones_pedido_txt($ped);
+    if (!$fis && !$cond) return '';
+    $col = function (string $tit, array $d) {
+        $h = '<div style="font-size:8px;text-transform:uppercase;color:#888;letter-spacing:.5px;margin-bottom:3px">'.$tit.'</div>';
+        foreach ($d as $k => $v) $h .= '<div style="font-size:9.5px;margin-bottom:1px"><span style="color:#777">'.htmlspecialchars($k).':</span> <strong>'.htmlspecialchars($v).'</strong></div>';
+        return $h;
+    };
+    return '<table style="margin-top:12px;background:#f7f7f7"><tr>
+        <td style="padding:8px 10px;vertical-align:top;width:50%">'.($fis ? $col('Datos fiscales', $fis) : '').'</td>
+        <td style="padding:8px 10px;vertical-align:top;width:50%">'.($cond ? $col('Condiciones (uso interno)', $cond) : '').'</td>
+      </tr></table>';
+}
+
 // ============================================================
 //  HTML del PDF
 // ============================================================
 function html_pedido(array $ped, array $items, string $lista_nombre, string $fecha,
-                     float $total_bruto, float $monto_dto, float $total_final, string $estado_txt): string {
+                     float $total_bruto, float $monto_dto, float $total_final, string $estado_txt,
+                     bool $interno = true, array $cli = []): string {
 
     $logo_path = __DIR__ . '/assets/img/logo.png';
     $logo_b64  = file_exists($logo_path)
@@ -56,6 +91,9 @@ function html_pedido(array $ped, array $items, string $lista_nombre, string $fec
     foreach ($items as $it) {
         $es_reg = !empty($it['es_regalo']) || (float)$it['precio_unit'] == 0;
         $pu  = $es_reg ? '<span style="color:#16a34a;font-weight:bold">REGALO</span>' : precio_fmt((float)$it['precio_unit']);
+        if (!$es_reg && !empty($it['dto_pct']) && (float)$it['dto_pct'] > 0)
+            $pu = '<span style="color:#999;text-decoration:line-through;font-size:8px">'.precio_fmt((float)$it['precio_lista']).'</span><br>'
+                . $pu . ' <span style="color:#16a34a;font-size:8px">−'.pct_fmt((float)$it['dto_pct']).'</span>';
         $sub = $es_reg ? '<span style="color:#16a34a;font-weight:bold">$0</span>'     : precio_fmt((float)$it['subtotal']);
         $bg  = $es_reg ? 'background:#f0fdf4;' : '';
         $filas .= '<tr style="'.$bg.'">
@@ -81,10 +119,7 @@ function html_pedido(array $ped, array $items, string $lista_nombre, string $fec
         </tr>';
     }
 
-    $extra = '';
-    if (!empty($ped['envio_info'])) {
-        $extra .= '<p style="margin:3px 0;font-size:10px"><strong>Envío:</strong> '.htmlspecialchars($ped['envio_info']).'</p>';
-    }
+    $extra = bloque_entrega_html($ped, $cli);
     if (!empty($ped['notas'])) {
         $extra .= '<p style="margin:3px 0;font-size:10px"><strong>Notas:</strong> '.nl2br(htmlspecialchars($ped['notas'])).'</p>';
     }
@@ -150,9 +185,11 @@ function html_pedido(array $ped, array $items, string $lista_nombre, string $fec
         <td style="text-align:right;border-top:2px solid #0d0d0d;padding-top:8px">
           <span style="font-size:12px;color:#666">TOTAL&nbsp;&nbsp;</span>
           <span style="font-size:19px;font-weight:bold">'.precio_fmt($total_final).'</span>
+          <div style="font-size:8.5px;color:#777;margin-top:2px">'.(($ped['factura'] ?? '') === 'sin' ? 'Sin factura · ' : (($ped['factura'] ?? '') === 'con' ? 'Con factura · ' : '')).'+ IVA o recargo según condición</div>
         </td>
       </tr>
     </table>
+    '.($interno ? bloque_condiciones_html($ped, $cli) : '').'
 
     <div style="margin-top:14px">'.$extra.$editado.'</div>
 
@@ -186,7 +223,9 @@ php composer.phar require dompdf/dompdf</pre>
              <br><a href="admin.php?s=pedidos">← Volver</a></div>');
     }
 
-    $html = html_pedido($ped, $items, $lista_nombre, $fecha, $total_bruto, $monto_dto, $total_final, $estado_txt);
+    // El PDF que se manda al cliente (pdf_link) no lleva las condiciones internas
+    $html = html_pedido($ped, $items, $lista_nombre, $fecha, $total_bruto, $monto_dto, $total_final, $estado_txt,
+                        $format === 'pdf', $cli);
 
     $opts = new \Dompdf\Options();
     $opts->set('isRemoteEnabled', true);
@@ -262,7 +301,7 @@ function html_packing(array $ped, array $filas, string $fecha): string {
     }
 
     $extra = '';
-    if (!empty($ped['envio_info'])) $extra .= '<p style="margin:3px 0;font-size:10px"><strong>Envío:</strong> '.htmlspecialchars($ped['envio_info']).'</p>';
+    $extra .= bloque_entrega_html($ped, $GLOBALS['cli'] ?? [], true);
     if (!empty($ped['notas']))      $extra .= '<p style="margin:3px 0;font-size:10px"><strong>Notas:</strong> '.nl2br(htmlspecialchars($ped['notas'])).'</p>';
 
     return '<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -379,7 +418,7 @@ if ($format === 'excel') {
         ['Lista',          $lista_nombre],
         ['Fecha',          $fecha],
         ['Estado',         $estado_txt],
-        ['Envío',          $ped['envio_info'] ?: '—'],
+        ['Entrega',        $ped['entrega'] ?: ($ped['envio_info'] ?: '—')],
         ['Notas',          $ped['notas'] ?: '—'],
     ];
     $r = 3;
@@ -452,6 +491,33 @@ if ($format === 'excel') {
     $sheet->getStyle('A'.$r.':E'.$r)->getAlignment()->setHorizontal('right');
     $sheet->getStyle('A'.$r.':E'.$r)->getBorders()->getTop()
           ->setBorderStyle(\PhpOffice\PhpSpreadsheet\Style\Border::BORDER_MEDIUM);
+
+    // IVA o recargo y total a cobrar (uso interno)
+    if ($ped['impuesto_pct'] !== null) {
+        $r++;
+        $sheet->mergeCells('A'.$r.':D'.$r);
+        $sheet->setCellValue('A'.$r, ($ped['factura'] === 'sin' ? 'Recargo sin factura ' : 'IVA ') . pct_fmt((float)$ped['impuesto_pct']));
+        $sheet->setCellValue('E'.$r, (float)$ped['impuesto_monto']);
+        $sheet->getStyle('E'.$r)->getNumberFormat()->setFormatCode('"$"#,##0');
+        $sheet->getStyle('A'.$r.':E'.$r)->getAlignment()->setHorizontal('right');
+        $r++;
+        $sheet->mergeCells('A'.$r.':D'.$r);
+        $sheet->setCellValue('A'.$r, 'TOTAL A COBRAR (' . (COMPROBANTES[$ped['comprobante']] ?? '') . ')');
+        $sheet->setCellValue('E'.$r, (float)$ped['total_a_cobrar']);
+        $sheet->getStyle('A'.$r.':E'.$r)->getFont()->setBold(true);
+        $sheet->getStyle('E'.$r)->getNumberFormat()->setFormatCode('"$"#,##0');
+        $sheet->getStyle('A'.$r.':E'.$r)->getAlignment()->setHorizontal('right');
+    }
+    if ($cli) {
+        $r += 2;
+        foreach (datos_fiscales_txt($cli) + condiciones_pedido_txt($ped) as $k => $v) {
+            $sheet->setCellValue('A'.$r, $k);
+            $sheet->setCellValue('B'.$r, $v);
+            $sheet->getStyle('A'.$r)->getFont()->setBold(true)->setSize(9);
+            $sheet->getStyle('B'.$r)->getFont()->setSize(9);
+            $r++;
+        }
+    }
 
     // Anchos
     $sheet->getColumnDimension('A')->setWidth(14);

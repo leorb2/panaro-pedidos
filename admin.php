@@ -5,6 +5,7 @@
 require 'config.php';
 require 'admin_extra.php';
 require 'productos_excel.php';
+require 'clientes_lib.php';
 admin_required();
 
 $seccion   = $_GET['s'] ?? 'pedidos';
@@ -78,6 +79,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $seccion  = 'config';
     }
 
+    if ($action === 'guardar_config_comercial') {
+        $rec = (string)($_POST['recargo_sin_factura'] ?? '0');
+        set_config('recargo_sin_factura', isset(RECARGOS_SIN_FACTURA[$rec]) ? $rec : '0');
+        foreach (LISTAS as $lid => $l) {
+            $aj = max(-90, min(100, (float)str_replace(',', '.', (string)($_POST['ajuste_lista_'.$lid] ?? '0'))));
+            set_config('ajuste_lista_'.$lid, (string)$aj);
+        }
+        $flash_ok = 'Condiciones generales guardadas.';
+        $seccion  = 'config';
+    }
+
     if ($action === 'guardar_config') {
         set_config('promo_activa', isset($_POST['promo_activa']) ? '1' : '0');
         set_config('promo_monto',  (string)(float)$_POST['promo_monto']);
@@ -97,7 +109,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 db()->prepare('INSERT INTO usuarios (nombre,email,password,lista_id,whatsapp,direccion) VALUES (?,?,?,?,?,?)')
                    ->execute([$nom,$email,password_hash($pass,PASSWORD_DEFAULT),$lista_id,$wa,$dir_new]);
-                $flash_ok = "Usuario «{$nom}» creado con lista ".nombre_lista($lista_id).".";
+                $nuevo_id = (int)db()->lastInsertId();
+                if ($dir_new !== '') {
+                    db()->prepare("INSERT INTO direcciones (usuario_id, alias, modalidad, calle, aclaraciones, predeterminada) VALUES (?, 'Principal', 'domicilio', ?, ?, 1)")
+                       ->execute([$nuevo_id, mb_substr($dir_new, 0, 160), mb_strlen($dir_new) > 160 ? $dir_new : null]);
+                }
+                $flash_ok = "Usuario «{$nom}» creado con lista ".nombre_lista($lista_id).". Al entrar se le va a pedir que complete su ficha (es opcional); también la podés completar vos desde «Ficha».";
             } catch (Throwable $e) { $flash_err = 'El email ya existe.'; }
         } else { $flash_err = 'Completá todos los campos.'; }
         $seccion = 'usuarios';
@@ -433,7 +450,24 @@ function estado_label(string $e): string {
           </tr>
         </tfoot>
       </table>
-      <?php if ($ver_ped['envio_info']): ?><p style="font-size:.85rem"><strong>Envío:</strong> <?= escape($ver_ped['envio_info']) ?></p><?php endif; ?>
+      <?php $cli_ped = cliente((int)$ver_ped['usuario_id']) ?? []; ?>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.8rem;margin:.4rem 0 .8rem">
+        <?php if (!empty($ver_ped['entrega'])): $el = explode("\n", $ver_ped['entrega']); ?>
+        <div style="background:#f8f8f8;border-radius:8px;padding:.7rem .85rem;font-size:.83rem;line-height:1.5">
+          <div style="font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#888;margin-bottom:.2rem">🚚 Entrega</div>
+          <strong><?= escape(array_shift($el)) ?></strong><br><?= nl2br(escape(implode("\n", $el))) ?>
+        </div>
+        <?php elseif ($ver_ped['envio_info']): ?>
+        <div style="background:#f8f8f8;border-radius:8px;padding:.7rem .85rem;font-size:.83rem"><strong>Envío:</strong> <?= escape($ver_ped['envio_info']) ?></div>
+        <?php endif; ?>
+        <?php $fis = $cli_ped ? datos_fiscales_txt($cli_ped) : []; $cond = condiciones_pedido_txt($ver_ped); if ($fis || $cond): ?>
+        <div style="background:#f5f3ff;border-radius:8px;padding:.7rem .85rem;font-size:.83rem;line-height:1.6">
+          <div style="font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#7c3aed;margin-bottom:.2rem">🧾 Facturación (interno)</div>
+          <?php foreach ($fis + $cond as $k => $v): ?><div><span style="color:#777"><?= escape($k) ?>:</span> <strong><?= escape($v) ?></strong></div><?php endforeach; ?>
+          <a href="admin_cliente.php?id=<?= (int)$ver_ped['usuario_id'] ?>" style="font-size:.78rem;color:#7c3aed">Ver ficha del cliente →</a>
+        </div>
+        <?php endif; ?>
+      </div>
       <?php if ($ver_ped['notas']): ?><p style="font-size:.85rem"><strong>Notas:</strong> <?= escape($ver_ped['notas']) ?></p><?php endif; ?>
       <?php if (!empty($ver_ped['veces_editado']) && $ver_ped['veces_editado'] > 0): ?>
         <p style="font-size:.8rem;color:#b45309;margin-top:.6rem">
@@ -700,6 +734,7 @@ function estado_label(string $e): string {
             <td><span class="estado-badge <?= $uu['activo']?'estado-enviado':'estado-cancelado' ?>"><?= $uu['activo']?'Activo':'Inactivo' ?></span></td>
             <td style="display:flex;gap:.4rem;flex-wrap:wrap">
               <?php if (!$uu['es_admin']): ?>
+              <a href="admin_cliente.php?id=<?= $uu['id'] ?>" class="btn-det" style="border-color:#7c3aed;color:#7c3aed">Ficha<?= !empty($uu['ficha_completa_en']) ? ' ✓' : '' ?></a>
               <a href="?s=usuarios&editar=<?= $uu['id'] ?>" class="btn-det">Editar</a>
               <form method="post" style="display:inline">
                 <input type="hidden" name="action" value="toggle_usuario">
@@ -973,6 +1008,26 @@ function estado_label(string $e): string {
             <code>{link_pdf}</code> link al PDF
           </div>
           <button type="submit" class="btn-sm rojo">Guardar plantilla</button>
+        </form>
+      </div>
+
+      <div class="config-card">
+        <h3>🧾 Facturación y ajustes de lista</h3>
+        <form method="post">
+          <input type="hidden" name="action" value="guardar_config_comercial">
+          <div class="field"><label>Recargo general para pedidos sin factura</label>
+            <select name="recargo_sin_factura">
+              <?php $rg = get_config('recargo_sin_factura','0'); foreach (RECARGOS_SIN_FACTURA as $k => $t): ?>
+                <option value="<?= $k ?>" <?= (string)(float)$rg === (string)(float)$k ? 'selected' : '' ?>><?= $t ?></option>
+              <?php endforeach; ?>
+            </select>
+            <small style="color:var(--gris-4);display:block;margin-top:.25rem">Cada cliente puede tener uno propio en su ficha. Los clientes no lo ven.</small></div>
+          <?php foreach (LISTAS as $lid => $l): ?>
+          <div class="field"><label>Ajuste de precios · <?= escape($l['nombre']) ?> (%)</label>
+            <input type="number" name="ajuste_lista_<?= $lid ?>" step="0.1" min="-90" max="100" value="<?= escape(get_config('ajuste_lista_'.$lid,'0')) ?>"></div>
+          <?php endforeach; ?>
+          <small style="color:var(--gris-4);display:block;margin:-.3rem 0 .8rem">Negativo = descuento, positivo = recargo. Se aplica a todos los clientes de la lista que no tengan un ajuste propio; el cliente ve directamente el precio final.</small>
+          <button type="submit" class="btn-sm rojo">Guardar</button>
         </form>
       </div>
 

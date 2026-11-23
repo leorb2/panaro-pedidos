@@ -100,6 +100,7 @@ function total_mostrar(array $p): float {
     <a href="pedido.php">Nuevo pedido</a>
     <a href="historial.php" class="activo">Mis pedidos</a>
     <a href="listas.php">Listas de precios</a>
+    <a href="mis_datos.php">Mis datos</a>
     <a href="perfil.php">Mi perfil</a>
   </div>
 

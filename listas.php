@@ -79,6 +79,7 @@ $descargas = array_values(array_filter(get_novedades($lista_id), fn($n) =>
     <a href="pedido.php">Nuevo pedido</a>
     <a href="historial.php">Mis pedidos</a>
     <a href="listas.php" class="activo">Listas de precios</a>
+    <a href="mis_datos.php">Mis datos</a>
     <a href="perfil.php">Mi perfil</a>
   </div>
 

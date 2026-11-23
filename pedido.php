@@ -4,8 +4,11 @@
 //               novedades, link admin↔portal
 // ============================================================
 require 'config.php';
+require 'clientes_lib.php';
+require 'ui_clientes.php';
 auth_required();
 $u = current_user();
+$cli = cliente((int)$u['id']);
 
 $lista_id     = (int)($u['lista_id'] ?? 3);
 $lista_nombre = nombre_lista($lista_id);
@@ -29,9 +32,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
     $notas       = trim($_POST['notas']      ?? '');
     $envio_info  = trim($_POST['envio_info'] ?? '');
     $cod_dto     = strtoupper(trim($_POST['codigo_descuento'] ?? ''));
+    $factura     = ($_POST['factura'] ?? $cli['factura_preferida'] ?? 'con') === 'sin' ? 'sin' : 'con';
+
+    // Entrega: una dirección de la libreta (o el texto libre si todavía no tiene ninguna)
+    $dir_sel = !empty($_POST['direccion_id']) ? direccion((int)$u['id'], (int)$_POST['direccion_id']) : null;
+    $entrega = '';
+    if ($dir_sel) {
+        $entrega    = direccion_detalle($dir_sel, $cli);
+        $envio_info = $dir_sel['alias'] . ': ' . direccion_linea($dir_sel);
+    } elseif (direcciones((int)$u['id'])) {
+        $flash_err = 'Elegí la dirección de entrega.';
+    }
 
     $productos_bd = db()->query("SELECT * FROM productos WHERE activo=1 ORDER BY orden ASC")->fetchAll();
     $prod_map     = array_column($productos_bd, null, 'id');
+    $precios      = precios_cliente($cli, $productos_bd);
 
     $items = [];
     $total = 0;
@@ -41,10 +56,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
         $pid  = (int)$pid;
         if (!isset($prod_map[$pid])) continue;
         $p    = $prod_map[$pid];
-        $prec = (float)$p[$campo_precio];
+        $pc   = $precios[$pid];
+        if ($pc['final'] <= 0) continue;
+        $prec = $pc['final'];
         $sub  = $prec * $qty;
         $total += $sub;
-        $items[] = ['producto_id'=>$pid,'nombre'=>nombre_item($p),'precio_unit'=>$prec,'cantidad'=>$qty,'subtotal'=>$sub,'regalo'=>0];
+        $items[] = ['producto_id'=>$pid,'nombre'=>nombre_item($p),'precio_unit'=>$prec,'cantidad'=>$qty,'subtotal'=>$sub,'regalo'=>0,
+                    'precio_lista'=>$pc['lista'],'dto_pct'=>$pc['dto'] ?: null];
     }
     // Items de regalo (precio $0)
     if ($promo12_aplica) {
@@ -56,7 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
             $reg = calc_regalo($qty);
             if ($reg > 0) {
                 $items[] = ['producto_id'=>$pid,'nombre'=>nombre_item($prod_map[$pid]).' [REGALO 12+1]',
-                            'precio_unit'=>0,'cantidad'=>$reg,'subtotal'=>0,'regalo'=>1];
+                            'precio_unit'=>0,'cantidad'=>$reg,'subtotal'=>0,'regalo'=>1,'precio_lista'=>null,'dto_pct'=>null];
             }
         }
     }
@@ -75,6 +93,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
     }
     $total_final = max(0, $total - $monto_dto);
 
+    // Condiciones comerciales del momento (quedan guardadas en el pedido)
+    $comprobante    = comprobante_pedido($cli, $factura);
+    $impuesto_pct   = impuesto_pedido($cli, $factura);
+    $impuesto_monto = round($total_final * $impuesto_pct / 100, 2);
+    $total_cobrar   = $total_final + $impuesto_monto;
+    $ajuste_pct     = ajuste_cliente($cli);
+
     if (empty($items) && !$flash_err) {
         $flash_err = 'Agregá al menos un producto al pedido.';
     }
@@ -83,14 +108,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
         $db = db();
         $db->beginTransaction();
         try {
-            $db->prepare('INSERT INTO pedidos (usuario_id,lista_id,total,notas,envio_info,codigo_descuento,monto_descuento,total_con_dto)
-                          VALUES (?,?,?,?,?,?,?,?)')
+            $db->prepare('INSERT INTO pedidos (usuario_id,lista_id,total,notas,envio_info,codigo_descuento,monto_descuento,total_con_dto,
+                                               direccion_id,entrega,factura,comprobante,impuesto_pct,impuesto_monto,total_a_cobrar,ajuste_pct,condicion_pago)
+                          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
                ->execute([$u['id'],$lista_id,$total,$notas,$envio_info,
-                          $cod_dto_ok ?: null, $monto_dto, $total_final]);
+                          $cod_dto_ok ?: null, $monto_dto, $total_final,
+                          $dir_sel['id'] ?? null, $entrega ?: null, $factura, $comprobante, $impuesto_pct, $impuesto_monto,
+                          $total_cobrar, $ajuste_pct, $cli['condicion_pago'] ?? null]);
             $pedido_id = $db->lastInsertId();
-            $st = $db->prepare('INSERT INTO pedido_items (pedido_id,producto_id,nombre,precio_unit,cantidad,subtotal) VALUES (?,?,?,?,?,?)');
+            $st = $db->prepare('INSERT INTO pedido_items (pedido_id,producto_id,nombre,precio_unit,cantidad,subtotal,es_regalo,precio_lista,dto_pct) VALUES (?,?,?,?,?,?,?,?,?)');
             foreach ($items as $it)
-                $st->execute([$pedido_id,$it['producto_id'],$it['nombre'],$it['precio_unit'],$it['cantidad'],$it['subtotal']]);
+                $st->execute([$pedido_id,$it['producto_id'],$it['nombre'],$it['precio_unit'],$it['cantidad'],$it['subtotal'],
+                              $it['regalo'],$it['precio_lista'],$it['dto_pct']]);
             // Incrementar uso del código
             if ($cod_dto_ok) {
                 $db->prepare('UPDATE codigos_descuento SET usos_actuales=usos_actuales+1 WHERE codigo=?')
@@ -119,7 +148,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
                 ? "<tr><td colspan='3' style='padding:8px 12px;color:#22c55e'>Descuento ({$cod_dto_ok})</td><td style='padding:8px 12px;color:#22c55e;text-align:right;font-weight:700'>− ".precio_fmt($monto_dto)."</td></tr>"
                 : '';
             $extra = ($notas      ? "<p><strong>Notas:</strong> ".escape($notas)."</p>" : '').
-                     ($envio_info ? "<p><strong>Envío:</strong> ".escape($envio_info)."</p>" : '');
+                     ($entrega ? "<p><strong>Entrega:</strong><br>".nl2br(escape($entrega))."</p>"
+                               : ($envio_info ? "<p><strong>Envío:</strong> ".escape($envio_info)."</p>" : ''));
 
             $html = "<!DOCTYPE html><html><head><meta charset='UTF-8'></head>
             <body style='font-family:Arial,sans-serif;background:#f4f4f4;padding:20px'>
@@ -142,6 +172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
                 </table>
                 <div style='text-align:right;border-top:2px solid #0d0d0d;padding-top:12px;margin-top:8px'>
                   <span style='font-size:20px;font-weight:700'>TOTAL: ".precio_fmt($total_final)."</span>
+                  <div style='font-size:12px;color:#777;margin-top:4px'>".($factura === 'sin' ? 'Sin factura' : 'Con factura')." · + IVA o recargo según condición</div>
                 </div>
                 {$extra}
               </div>
@@ -159,7 +190,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
             foreach ($items as $it)
                 $wt .= "• {$it['nombre']} ×{$it['cantidad']}" . ($it['precio_unit'] > 0 ? " — ".precio_fmt($it['subtotal']) : " [REGALO]") . "\n";
             if ($monto_dto > 0) $wt .= "Descuento ({$cod_dto_ok}): − ".precio_fmt($monto_dto)."\n";
-            $wt .= "*TOTAL: ".precio_fmt($total_final)."*";
+            $wt .= "*TOTAL: ".precio_fmt($total_final)."* (+ IVA o recargo según condición)\n";
+            $wt .= $factura === 'sin' ? "Sin factura" : "Con factura";
             if ($notas)      $wt .= "\nNotas: {$notas}";
             if ($envio_info) $wt .= "\nEnvío: {$envio_info}";
             $wa_link = 'https://wa.me/'.WA_NUMBER.'?text='.urlencode($wt);
@@ -168,12 +200,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
             $telegram  = "🛒 NUEVO PEDIDO MAYORISTA\n\n";
             $telegram .= "Pedido #{$pedido_id}\n";
             $telegram .= "Cliente: {$u['nombre']}\n";
-            $telegram .= "Lista: {$lista_nombre}\n";
+            $telegram .= "Lista: {$lista_nombre}" . ($ajuste_pct != 0 ? " (ajuste ".($ajuste_pct > 0 ? '+' : '').pct_fmt($ajuste_pct).")" : '') . "\n";
+            if ($cli['razon_social']) $telegram .= "Razón social: {$cli['razon_social']}" . ($cli['cuit'] ? " · {$cli['cuit']}" : '') . "\n";
             $telegram .= "Fecha: {$fecha}\n\n";
             foreach ($items as $it) {
                 $telegram .= "• {$it['nombre']} x{$it['cantidad']}";
                 if ($it['precio_unit'] > 0) {
-                    $telegram .= " — ".precio_fmt($it['subtotal']);
+                    $telegram .= " — ".precio_fmt($it['subtotal']) . (!empty($it['dto_pct']) ? " (−".pct_fmt((float)$it['dto_pct']).")" : '');
                 } else {
                     $telegram .= " [REGALO]";
                 }
@@ -182,9 +215,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
             if ($monto_dto > 0) {
                 $telegram .= "\nDescuento ({$cod_dto_ok}): − ".precio_fmt($monto_dto)."\n";
             }
-            $telegram .= "\nTOTAL: ".precio_fmt($total_final)."\n";
-            if ($notas)      $telegram .= "\nNotas: {$notas}\n";
-            if ($envio_info) $telegram .= "\nEnvío: {$envio_info}\n";
+            $telegram .= "\nSubtotal: ".precio_fmt($total_final)."\n";
+            $telegram .= ($factura === 'sin' ? "Recargo sin factura " : "IVA ") . pct_fmt($impuesto_pct) . ": ".precio_fmt($impuesto_monto)."\n";
+            $telegram .= "TOTAL A COBRAR: ".precio_fmt($total_cobrar)."\n";
+            $telegram .= "Comprobante: " . COMPROBANTES[$comprobante] . "\n";
+            $telegram .= "Pago: " . (CONDICIONES_PAGO[$cli['condicion_pago'] ?? ''] ?? '—') . "\n";
+            if ($entrega)        $telegram .= "\n🚚 Entrega:\n{$entrega}\n";
+            elseif ($envio_info) $telegram .= "\nEnvío: {$envio_info}\n";
+            if ($notas)          $telegram .= "\nNotas: {$notas}\n";
             enviar_telegram($telegram);
             // ─────────────────────────────────────────────────────
 
@@ -195,10 +233,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
 
 // Cargar datos
 $productos = db()->query(
-    "SELECT id,codigo,nombre,descripcion,presentacion,seccion,imagen,{$campo_precio} AS mi_precio,pvp_sugerido
-     FROM productos WHERE activo=1 AND {$campo_precio} > 0
+    "SELECT * FROM productos WHERE activo=1 AND {$campo_precio} > 0
      ORDER BY (seccion = 'nuevo') ASC, orden ASC, id ASC"
 )->fetchAll();
+$mis_precios = precios_cliente($cli, $productos);
+foreach ($productos as &$p_) {
+    $pc_ = $mis_precios[(int)$p_['id']];
+    $p_['mi_precio'] = $pc_['final']; $p_['precio_lista_cli'] = $pc_['lista']; $p_['dto_pct'] = $pc_['dto'];
+}
+unset($p_);
+$mis_dirs        = direcciones((int)$u['id']);
+$ficha_ok        = ficha_completa($cli);
+$factura_default = ($cli['factura_preferida'] ?? 'con') === 'sin' ? 'sin' : 'con';
 
 $promo_activa = get_config('promo_activa','1') === '1';
 $promo_monto  = (float)get_config('promo_monto','50000');
@@ -217,6 +263,23 @@ $novedades = get_novedades($lista_id);
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <title>Nuevo Pedido — Panaro Car Care</title>
 <link rel="stylesheet" href="style.css">
+<?= ui_clientes_css() ?>
+<?= ui_direccion_js() ?>
+<style>
+.dto-prod{display:inline-block;background:#dcfce7;color:#166534;font-size:.62rem;font-weight:700;padding:1px 6px;border-radius:3px;margin-left:4px;vertical-align:middle}
+.precio-tachado{display:block;font-size:.72rem;color:#999;text-decoration:line-through;font-weight:400}
+.entrega-opts{display:flex;flex-direction:column;gap:.45rem;margin-bottom:.6rem}
+.entrega-opt{display:flex;gap:.55rem;align-items:flex-start;border:1.5px solid var(--gris-2);border-radius:8px;padding:.6rem .7rem;cursor:pointer;font-size:.84rem;line-height:1.35;text-transform:none!important;letter-spacing:0!important;font-weight:400!important;color:var(--negro)!important;margin:0!important}
+.entrega-opt:has(input:checked){border-color:var(--rojo);background:#fff5f5}
+.entrega-opt input{margin-top:3px}
+.entrega-opt b{display:block;font-size:.86rem;font-weight:700}
+.entrega-opt span{color:#666;font-size:.78rem}
+.factura-opts{display:flex;gap:.4rem;margin:.2rem 0 .6rem}
+.factura-opts label{text-transform:none!important;letter-spacing:0!important;margin:0!important;flex:1;display:flex;align-items:center;justify-content:center;gap:.35rem;border:1.5px solid #333;border-radius:7px;padding:.5rem .4rem;font-size:.8rem;font-weight:600;color:#ccc;cursor:pointer}
+.factura-opts label:has(input:checked){border-color:var(--rojo);color:#fff;background:#2a0d0d}
+.nota-iva{font-size:.72rem;color:#999;text-align:right;margin-top:.25rem}
+.lbl-chico{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--gris-4);display:block;margin-bottom:.35rem}
+</style>
 <style>
 /* ── Layout fijo iOS-safe ─────────────────────────────────── */
 .page-layout{display:flex;flex-direction:column;height:100vh;overflow:hidden}
@@ -337,6 +400,11 @@ $novedades = get_novedades($lista_id);
   <?php if ($flash_ok): ?><div class="flash-ok"><?= escape($flash_ok) ?></div><?php endif; ?>
   <?php if ($flash_err): ?><div class="flash-err"><?= escape($flash_err) ?></div><?php endif; ?>
 
+  <?php if (!$ficha_ok): ?>
+  <div class="fc-aviso">📋 <strong>Completá tus datos de facturación y entrega</strong> para que podamos facturar y despachar tus pedidos sin demoras. Es una sola vez.
+    <a href="mis_datos.php">Completar mis datos →</a></div>
+  <?php endif; ?>
+
   <!-- Novedades -->
   <?php if ($novedades): ?>
   <div class="novedades-wrap">
@@ -407,7 +475,13 @@ $novedades = get_novedades($lista_id);
         </div>
 
         <div class="prod-precio-base"><?= precio_fmt((float)$p['pvp_sugerido']) ?></div>
-        <div class="prod-precio-may" style="color:<?= escape($lista_color) ?>"><?= precio_fmt((float)$p['mi_precio']) ?></div>
+        <div class="prod-precio-may" style="color:<?= escape($lista_color) ?>">
+          <?php if ($p['dto_pct'] > 0): ?>
+            <span class="precio-tachado"><?= precio_fmt((float)$p['precio_lista_cli']) ?></span>
+          <?php endif; ?>
+          <?= precio_fmt((float)$p['mi_precio']) ?>
+          <?php if ($p['dto_pct'] > 0): ?><span class="dto-prod">−<?= escape(pct_fmt((float)$p['dto_pct'])) ?></span><?php endif; ?>
+        </div>
 
         <div class="qty-ctrl">
           <button type="button" class="qty-btn qty-btn-minus" onclick="cambiarQty(<?= $p['id'] ?>,-1)">−</button>
@@ -439,13 +513,24 @@ $novedades = get_novedades($lista_id);
     <div class="resumen-wrap">
       <div class="notas-box">
         <h3 style="font-size:1rem;margin-bottom:.8rem">Información adicional</h3>
-        <label style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--gris-4);display:block;margin-bottom:.3rem">
-          Dirección / datos de envío
-        </label>
-        <input type="text" name="envio_info" id="envio_info"
-               value="<?= escape($dir_default) ?>"
-               placeholder="Ej: Calle Falsa 123, CABA — L a V 9 a 18hs"
-               style="width:100%;padding:.6rem .8rem;border:1.5px solid var(--gris-2);border-radius:6px;font-family:inherit;font-size:.88rem;outline:none;margin-bottom:.8rem">
+        <span class="lbl-chico">Entrega</span>
+        <div class="entrega-opts" id="entrega-opts">
+          <?php foreach ($mis_dirs as $d): ?>
+          <label class="entrega-opt">
+            <input type="radio" name="direccion_id" value="<?= $d['id'] ?>" <?= !empty($d['predeterminada']) ? 'checked' : '' ?> required>
+            <div><b><?= escape($d['alias']) ?> · <?= escape(MODALIDADES[$d['modalidad']]) ?></b><span><?= escape(direccion_linea($d)) ?></span></div>
+          </label>
+          <?php endforeach; ?>
+        </div>
+        <?php if (!$mis_dirs): ?>
+          <input type="text" name="envio_info" id="envio_info" value="<?= escape($dir_default) ?>"
+                 placeholder="Dirección de envío, o cargá una abajo"
+                 style="width:100%;padding:.6rem .8rem;border:1.5px solid var(--gris-2);border-radius:6px;font-family:inherit;font-size:.88rem;outline:none;margin-bottom:.4rem">
+        <?php endif; ?>
+        <div style="display:flex;gap:1rem;margin-bottom:.9rem;flex-wrap:wrap">
+          <button type="button" class="fc-link" onclick="abrirDireccion()">+ Agregar otra dirección</button>
+          <?php if ($mis_dirs): ?><a href="mis_datos.php#direcciones" class="fc-link">Administrar direcciones</a><?php endif; ?>
+        </div>
         <label style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--gris-4);display:block;margin-bottom:.3rem">
           Notas del pedido
         </label>
@@ -463,6 +548,10 @@ $novedades = get_novedades($lista_id);
           <span>Lista</span>
           <span class="val" style="color:<?= escape($lista_color) ?>;font-size:.85rem"><?= escape($lista_nombre) ?></span>
         </div>
+        <div class="factura-opts">
+          <label><input type="radio" name="factura" value="con" <?= $factura_default === 'con' ? 'checked' : '' ?>> Con factura</label>
+          <label><input type="radio" name="factura" value="sin" <?= $factura_default === 'sin' ? 'checked' : '' ?>> Sin factura</label>
+        </div>
         <div id="dto-linea-wrap" style="display:none" class="dto-linea">
           <span id="dto-linea-lbl">Descuento</span>
           <span id="dto-linea-val">— $0</span>
@@ -474,6 +563,7 @@ $novedades = get_novedades($lista_id);
         <div id="total-original-wrap" style="display:none;text-align:right;margin-top:.2rem">
           <span style="font-size:.78rem;color:#888;text-decoration:line-through" id="res-total-orig"></span>
         </div>
+        <div class="nota-iva">+ IVA o recargo según condición</div>
         <button type="submit" class="btn-enviar" id="btn-enviar" disabled>Enviar Pedido</button>
         <?php if ($wa_link): ?>
         <a href="<?= escape($wa_link) ?>" target="_blank" class="btn-wa" style="display:block;margin-top:.6rem">
@@ -486,6 +576,48 @@ $novedades = get_novedades($lista_id);
 </div>
 </div><!-- /page-scroll -->
 </div><!-- /page-layout -->
+
+<!-- Nueva dirección sin salir del pedido -->
+<div class="fc-modal" id="modal-dir" hidden>
+  <form class="fc-card" id="form-dir" onsubmit="return guardarDireccion(event)">
+    <input type="hidden" name="action" value="guardar_direccion">
+    <input type="hidden" name="ajax" value="1">
+    <h3>Nueva dirección</h3>
+    <p class="fc-sub">Queda guardada en tu libreta para los próximos pedidos.</p>
+    <?php ui_direccion_campos(['predeterminada' => !$mis_dirs]); ?>
+    <div id="dir-err" class="flash-err" style="display:none;margin-top:.8rem"></div>
+    <div class="fc-btns">
+      <button class="fc-btn" id="btn-dir">Guardar y usar</button>
+      <button type="button" class="fc-btn sec" onclick="cerrarDireccion()">Cancelar</button>
+    </div>
+  </form>
+</div>
+<script>
+function abrirDireccion(){ document.getElementById('modal-dir').hidden = false; }
+function cerrarDireccion(){ document.getElementById('modal-dir').hidden = true; }
+document.getElementById('modal-dir').addEventListener('click', e => { if (e.target.id === 'modal-dir') cerrarDireccion(); });
+function guardarDireccion(ev){
+  ev.preventDefault();
+  const f = document.getElementById('form-dir'), btn = document.getElementById('btn-dir'), err = document.getElementById('dir-err');
+  btn.disabled = true; err.style.display = 'none';
+  fetch('mis_datos.php', { method: 'POST', body: new FormData(f), credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      btn.disabled = false;
+      if (!d.ok) { err.textContent = d.error; err.style.display = 'block'; return; }
+      const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      const lab = document.createElement('label');
+      lab.className = 'entrega-opt';
+      lab.innerHTML = '<input type="radio" name="direccion_id" value="' + (+d.id) + '" required checked>' +
+                      '<div><b>' + esc(d.alias) + ' · ' + esc(d.modalidad) + '</b><span>' + esc(d.linea) + '</span></div>';
+      document.getElementById('entrega-opts').appendChild(lab);
+      const libre = document.getElementById('envio_info'); if (libre) libre.remove();
+      f.reset(); cerrarDireccion();
+    })
+    .catch(() => { btn.disabled = false; err.textContent = 'No se pudo guardar. Probá de nuevo.'; err.style.display = 'block'; });
+  return false;
+}
+</script>
 
 <script>
 (function(){

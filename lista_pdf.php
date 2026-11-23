@@ -6,6 +6,7 @@
 //  cambie un precio, un producto o el día.
 // ============================================================
 require 'config.php';
+require 'clientes_lib.php';
 require 'listas_lib.php';
 auth_required();
 
@@ -25,7 +26,7 @@ if (!cargar_vendor() || !class_exists('\Dompdf\Dompdf')) {
 @ini_set('memory_limit', '256M');
 
 try {
-    $r = pdf_lista_cache(db(), $tipo, __DIR__);
+    $r = pdf_lista_cache(db(), $tipo, __DIR__, cliente((int)$u['id']));
 } catch (Throwable $e) {
     die('<div style="font-family:system-ui;padding:2rem">No se pudo generar la lista: ' . escape($e->getMessage()) . '</div>');
 }

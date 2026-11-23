@@ -4,6 +4,7 @@
 //  Recalcula regalos 12+1 y descuento automáticamente
 // ============================================================
 require 'config.php';
+require 'clientes_lib.php';
 admin_required();
 
 $admin = current_user();
@@ -37,6 +38,12 @@ $lista_id     = (int)$ped['lista_id'];
 $lista_nombre = nombre_lista($lista_id);
 $lista_color  = color_lista($lista_id);
 $campo_precio = campo_precio($lista_id);
+
+// Precios del cliente: el ajuste que tenía al hacer el pedido y sus descuentos por producto actuales
+$cli        = cliente((int)$ped['usuario_id']) ?? ['id' => (int)$ped['usuario_id'], 'lista_id' => $lista_id, 'ajuste_lista' => null];
+$ajuste_ped = $ped['ajuste_pct'] !== null ? (float)$ped['ajuste_pct'] : ajuste_cliente($cli);
+$dtos_cli   = descuentos_producto((int)$ped['usuario_id']);
+$precio_de  = fn(array $p) => precio_cliente((float)$p[$campo_precio], $ajuste_ped, $dtos_cli[(int)$p['id']] ?? 0);
 
 // ── Promo 12+1 (según config actual y lista del cliente) ─────
 $promo12_activa = get_config('promo12x1_activa','0') === '1';
@@ -80,7 +87,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'guard
         $prod_id = (int)$prod_id;
         if (!isset($prod_map[$prod_id])) continue;
         $p    = $prod_map[$prod_id];
-        $prec = (float)$p[$campo_precio];
+        $pc   = $precio_de($p);
+        $prec = $pc['final'];
         $sub  = $prec * $qty;
         $total += $sub;
         $items[] = [
@@ -90,6 +98,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'guard
             'cantidad'    => $qty,
             'subtotal'    => $sub,
             'es_regalo'   => 0,
+            'precio_lista'=> $pc['lista'],
+            'dto_pct'     => $pc['dto'] ?: null,
         ];
     }
 
@@ -109,6 +119,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'guard
                     'cantidad'    => $reg,
                     'subtotal'    => 0,
                     'es_regalo'   => 1,
+                    'precio_lista'=> null,
+                    'dto_pct'     => null,
                 ];
             }
         }
@@ -130,12 +142,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'guard
             // Reemplazar items
             $db->prepare('DELETE FROM pedido_items WHERE pedido_id=?')->execute([$pid]);
             $st = $db->prepare(
-                'INSERT INTO pedido_items (pedido_id,producto_id,nombre,precio_unit,cantidad,subtotal,es_regalo)
-                 VALUES (?,?,?,?,?,?,?)'
+                'INSERT INTO pedido_items (pedido_id,producto_id,nombre,precio_unit,cantidad,subtotal,es_regalo,precio_lista,dto_pct)
+                 VALUES (?,?,?,?,?,?,?,?,?)'
             );
             foreach ($items as $it) {
                 $st->execute([$pid, $it['producto_id'], $it['nombre'], $it['precio_unit'],
-                              $it['cantidad'], $it['subtotal'], $it['es_regalo']]);
+                              $it['cantidad'], $it['subtotal'], $it['es_regalo'], $it['precio_lista'], $it['dto_pct']]);
+            }
+            // IVA o recargo sobre el nuevo total (con el % que tenía el pedido)
+            if ($ped['impuesto_pct'] !== null) {
+                $imp = round($total_final * (float)$ped['impuesto_pct'] / 100, 2);
+                $db->prepare('UPDATE pedidos SET impuesto_monto=?, total_a_cobrar=? WHERE id=?')
+                   ->execute([$imp, $total_final + $imp, $pid]);
             }
 
             // Actualizar cabecera
@@ -194,6 +212,10 @@ foreach (array_keys($qty_actual) as $pid_item) {
         if ($row = $ex->fetch()) $productos[] = $row;
     }
 }
+
+// Precio de cada producto para este cliente
+foreach ($productos as &$p_) { $p_['mi_precio'] = $precio_de(['id' => $p_['id'], $campo_precio => $p_['mi_precio']])['final']; }
+unset($p_);
 
 // Historial de ediciones
 $ediciones = db()->prepare('SELECT * FROM pedido_ediciones WHERE pedido_id=? ORDER BY created_at DESC LIMIT 10');
