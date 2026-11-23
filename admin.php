@@ -6,6 +6,7 @@ require 'config.php';
 require 'admin_extra.php';
 require 'productos_excel.php';
 require 'clientes_lib.php';
+require 'avisos_lib.php';
 admin_required();
 
 $seccion   = $_GET['s'] ?? 'pedidos';
@@ -61,6 +62,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $seccion = 'pedidos';
         unset($_GET['ver']);   // volver al listado
+    }
+
+    if ($action === 'reenviar_avisos') {
+        $pid_av = (int)$_POST['pedido_id'];
+        $r = notificar_pedido($pid_av, !empty($_POST['al_cliente']), true);
+        $txt = 'Telegram: ' . ($r['telegram'][0] ? 'enviado' : 'falló (' . $r['telegram'][1] . ')')
+             . ' · Mail a ' . MAIL_TO . ': ' . ($r['mail'] ? 'aceptado por el servidor' : 'falló');
+        if ($r['telegram'][0] && $r['mail']) $flash_ok = "Avisos del pedido #{$pid_av} reenviados. $txt";
+        else $flash_err = "Pedido #{$pid_av}: $txt";
+        $seccion = 'pedidos';
+        $_GET['ver'] = $pid_av;
     }
 
     if ($action === 'estado_pedido') {
@@ -481,6 +493,11 @@ function estado_label(string $e): string {
         <a href="exportar_pedido.php?id=<?= $ver_ped['id'] ?>&f=pdf" target="_blank" class="btn-sm" style="text-decoration:none;background:#dc2626">📄 Ver PDF</a>
         <a href="exportar_pedido.php?id=<?= $ver_ped['id'] ?>&f=excel" class="btn-sm" style="text-decoration:none;background:#16a34a">📊 Excel</a>
         <a href="exportar_pedido.php?id=<?= $ver_ped['id'] ?>&f=packing" target="_blank" class="btn-sm" style="text-decoration:none;background:#7c3aed">📦 Packing list</a>
+        <form method="post" style="display:inline" onsubmit="return confirm('¿Reenviar el aviso del pedido #<?= $ver_ped['id'] ?> por Telegram y mail?')">
+          <input type="hidden" name="action" value="reenviar_avisos">
+          <input type="hidden" name="pedido_id" value="<?= $ver_ped['id'] ?>">
+          <button type="submit" class="btn-sm" style="background:#0ea5e9">🔔 Reenviar avisos</button>
+        </form>
       </div>
 
       <form method="post" class="form-inline" style="margin-top:.8rem;flex-wrap:wrap;gap:.5rem">

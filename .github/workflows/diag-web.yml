@@ -1,6 +1,11 @@
 # Prueba de avisos desde el PHP web (no el de consola). Crea un script temporal, lo llama y lo borra.
 name: Diagnostico web
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      pedido:
+        description: "Pedido a reenviar (opcional)"
+        default: "0"
 env:
   SSH_HOST: 45.132.157.212
   SSH_PORT: '65002'
@@ -34,6 +39,13 @@ jobs:
           }
           $h = "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nFrom: " . MAIL_NAME . " <" . MAIL_FROM . ">\r\n";
           echo "mail(): ", mail(MAIL_TO, 'Prueba de avisos desde la web', 'Prueba del portal (web).', $h) ? 'true' : 'FALSE', "\n";
+          if (is_file(__DIR__ . '/avisos_lib.php') && ($pid = (int)($_GET['pedido'] ?? 0))) {
+            require __DIR__ . '/clientes_lib.php'; require __DIR__ . '/avisos_lib.php';
+            $r = notificar_pedido($pid, false, true);
+            echo "reenvío pedido #$pid → telegram: ", $r['telegram'][0] ? 'OK' : 'FALLÓ ' . $r['telegram'][1], " · mail: ", $r['mail'] ? 'OK' : 'FALLÓ', "\n";
+            echo "log:\n", implode('', array_slice(file(__DIR__ . '/cache/avisos.log'), -6));
+          }
           PHP
-          curl -s -m 40 "https://pedidos.panaro.com.ar/$N" | sed 's/^/WEB> /' || true
+          P="${{ inputs.pedido }}"; case "$P" in *[!0-9]*) P=0;; esac
+          curl -s -m 60 "https://pedidos.panaro.com.ar/$N?pedido=$P" | sed 's/^/WEB> /' || true
           ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "rm -f '$DP/$N'; ls '$DP'/_diag_* 2>/dev/null | wc -l | sed 's/^/WEB> scripts temporales que quedan: /'"

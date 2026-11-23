@@ -6,6 +6,7 @@
 require 'config.php';
 require 'clientes_lib.php';
 require 'ui_clientes.php';
+require 'avisos_lib.php';
 auth_required();
 $u = current_user();
 $cli = cliente((int)$u['id']);
@@ -133,99 +134,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'envia
         }
 
         if ($pedido_id) {
-            $fecha = date('d/m/Y H:i');
-            // Email
-            $filas = '';
-            foreach ($items as $it) {
-                $filas .= "<tr>
-                  <td style='padding:8px 12px;border-bottom:1px solid #eee'>{$it['nombre']}</td>
-                  <td style='padding:8px 12px;border-bottom:1px solid #eee;text-align:center'>{$it['cantidad']}</td>
-                  <td style='padding:8px 12px;border-bottom:1px solid #eee;text-align:right'>".precio_fmt($it['precio_unit'])."</td>
-                  <td style='padding:8px 12px;border-bottom:1px solid #eee;text-align:right;font-weight:700'>".precio_fmt($it['subtotal'])."</td>
-                </tr>";
-            }
-            $dto_html = $monto_dto > 0
-                ? "<tr><td colspan='3' style='padding:8px 12px;color:#22c55e'>Descuento ({$cod_dto_ok})</td><td style='padding:8px 12px;color:#22c55e;text-align:right;font-weight:700'>− ".precio_fmt($monto_dto)."</td></tr>"
-                : '';
-            $extra = ($notas      ? "<p><strong>Notas:</strong> ".escape($notas)."</p>" : '').
-                     ($entrega ? "<p><strong>Entrega:</strong><br>".nl2br(escape($entrega))."</p>"
-                               : ($envio_info ? "<p><strong>Envío:</strong> ".escape($envio_info)."</p>" : ''));
-
-            $html = "<!DOCTYPE html><html><head><meta charset='UTF-8'></head>
-            <body style='font-family:Arial,sans-serif;background:#f4f4f4;padding:20px'>
-            <div style='max-width:600px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden'>
-              <div style='background:#0d0d0d;padding:20px;text-align:center'>
-                <h1 style='color:#fff;margin:0'>Panaro Car Care</h1>
-                <p style='color:#bbb;font-size:14px;margin:4px 0 0'>Pedido #{$pedido_id} — {$lista_nombre}</p>
-              </div>
-              <div style='padding:24px'>
-                <p><strong>Cliente:</strong> ".escape($u['nombre'])." — <strong>Lista:</strong> {$lista_nombre}</p>
-                <p style='color:#666;font-size:13px'>{$fecha}</p>
-                <table style='width:100%;border-collapse:collapse'>
-                  <thead><tr style='background:#f4f4f4'>
-                    <th style='padding:8px 12px;text-align:left;font-size:11px'>Producto</th>
-                    <th style='padding:8px 12px;text-align:center;font-size:11px'>Cant.</th>
-                    <th style='padding:8px 12px;text-align:right;font-size:11px'>Precio</th>
-                    <th style='padding:8px 12px;text-align:right;font-size:11px'>Subtotal</th>
-                  </tr></thead>
-                  <tbody>{$filas}{$dto_html}</tbody>
-                </table>
-                <div style='text-align:right;border-top:2px solid #0d0d0d;padding-top:12px;margin-top:8px'>
-                  <span style='font-size:20px;font-weight:700'>TOTAL: ".precio_fmt($total_final)."</span>
-                  <div style='font-size:12px;color:#777;margin-top:4px'>".($factura === 'sin' ? 'Sin factura' : 'Con factura')." · + IVA o recargo según condición</div>
-                </div>
-                {$extra}
-              </div>
-            </div></body></html>";
-
-            $headers  = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n";
-            $headers .= "From: ".MAIL_NAME." <".MAIL_FROM.">\r\nReply-To: ".MAIL_TO."\r\n";
-            $subj = '=?UTF-8?B?'.base64_encode("Pedido #{$pedido_id} — {$u['nombre']}").'?=';
-            @mail(MAIL_TO, $subj, $html, $headers);
-            if ($u['email']) @mail($u['email'], $subj, $html, $headers);
-
-            // WhatsApp
-            $wt  = "*Panaro Car Care — Pedido #{$pedido_id}*\n";
-            $wt .= "Lista: {$lista_nombre} | {$fecha}\nCliente: {$u['nombre']}\n";
-            foreach ($items as $it)
-                $wt .= "• {$it['nombre']} ×{$it['cantidad']}" . ($it['precio_unit'] > 0 ? " — ".precio_fmt($it['subtotal']) : " [REGALO]") . "\n";
-            if ($monto_dto > 0) $wt .= "Descuento ({$cod_dto_ok}): − ".precio_fmt($monto_dto)."\n";
-            $wt .= "*TOTAL: ".precio_fmt($total_final)."* (+ IVA o recargo según condición)\n";
-            $wt .= $factura === 'sin' ? "Sin factura" : "Con factura";
-            if ($notas)      $wt .= "\nNotas: {$notas}";
-            if ($envio_info) $wt .= "\nEnvío: {$envio_info}";
-            $wa_link = 'https://wa.me/'.WA_NUMBER.'?text='.urlencode($wt);
-
-            // ── TELEGRAM ─────────────────────────────────────────
-            $telegram  = "🛒 NUEVO PEDIDO MAYORISTA\n\n";
-            $telegram .= "Pedido #{$pedido_id}\n";
-            $telegram .= "Cliente: {$u['nombre']}\n";
-            $telegram .= "Lista: {$lista_nombre}" . ($ajuste_pct != 0 ? " (ajuste ".($ajuste_pct > 0 ? '+' : '').pct_fmt($ajuste_pct).")" : '') . "\n";
-            if ($cli['razon_social']) $telegram .= "Razón social: {$cli['razon_social']}" . ($cli['cuit'] ? " · {$cli['cuit']}" : '') . "\n";
-            $telegram .= "Fecha: {$fecha}\n\n";
-            foreach ($items as $it) {
-                $telegram .= "• {$it['nombre']} x{$it['cantidad']}";
-                if ($it['precio_unit'] > 0) {
-                    $telegram .= " — ".precio_fmt($it['subtotal']) . (!empty($it['dto_pct']) ? " (−".pct_fmt((float)$it['dto_pct']).")" : '');
-                } else {
-                    $telegram .= " [REGALO]";
-                }
-                $telegram .= "\n";
-            }
-            if ($monto_dto > 0) {
-                $telegram .= "\nDescuento ({$cod_dto_ok}): − ".precio_fmt($monto_dto)."\n";
-            }
-            $telegram .= "\nSubtotal: ".precio_fmt($total_final)."\n";
-            $telegram .= ($factura === 'sin' ? "Recargo sin factura " : "IVA ") . pct_fmt($impuesto_pct) . ": ".precio_fmt($impuesto_monto)."\n";
-            $telegram .= "TOTAL A COBRAR: ".precio_fmt($total_cobrar)."\n";
-            $telegram .= "Comprobante: " . COMPROBANTES[$comprobante] . "\n";
-            $telegram .= "Pago: " . (CONDICIONES_PAGO[$cli['condicion_pago'] ?? ''] ?? '—') . "\n";
-            if ($entrega)        $telegram .= "\n🚚 Entrega:\n{$entrega}\n";
-            elseif ($envio_info) $telegram .= "\nEnvío: {$envio_info}\n";
-            if ($notas)          $telegram .= "\nNotas: {$notas}\n";
-            enviar_telegram($telegram);
-            // ─────────────────────────────────────────────────────
-
+            // Avisos (Telegram, mail a Panaro y copia al cliente); quedan registrados en cache/avisos.log
+            $av      = notificar_pedido((int)$pedido_id, true);
+            $wa_link = 'https://wa.me/'.WA_NUMBER.'?text='.urlencode($av['wa']);
             $flash_ok = "✅ ¡Pedido #{$pedido_id} enviado! Te llega una copia por email.";
         }
     }
