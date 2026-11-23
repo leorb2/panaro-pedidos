@@ -26,3 +26,16 @@ jobs:
           echo "CSV>--usuarios por lista--\n";
           foreach (db()->query("SELECT lista_id, COUNT(*) n FROM usuarios WHERE es_admin=0 GROUP BY lista_id") as $r) echo "CSV>lista {$r['lista_id']}: {$r['n']}\n";
           PHP
+      - name: Verificar v6
+        run: |
+          ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "cd '$DP' && for f in *.php; do php -l \$f | grep -v 'No syntax' ; done; php" <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST'] = 'pedidos.panaro.com.ar';
+          require 'config.php'; require 'clientes_lib.php';
+          $prods = db()->query("SELECT * FROM productos WHERE activo=1")->fetchAll();
+          foreach (db()->query("SELECT * FROM usuarios WHERE es_admin=0") as $c) {
+            $pr = precios_cliente($c, $prods); $n = count(array_filter($pr, fn($x) => $x['final'] > 0));
+            echo "VER> cliente {$c['id']} lista {$c['lista_id']} ajuste ", ajuste_cliente($c), " · productos con precio: $n · direcciones: ", count(direcciones((int)$c['id'])), "\n";
+          }
+          echo "VER> recargo general ", get_config('recargo_sin_factura','?'), "\n";
+          PHP
